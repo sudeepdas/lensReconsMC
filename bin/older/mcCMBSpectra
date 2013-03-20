@@ -1,0 +1,49 @@
+#!/usr/bin/env python
+from flipper import *
+import scipy.ndimage
+p = flipperDict.flipperDict()
+p.readFromFile(sys.argv[1])
+
+
+#read in the theory
+X = numpy.loadtxt(p['theoryCls'])
+l = X[:,0]
+pi = numpy.pi
+cl =  X[:,1]/(l*(l+1))*2*pi
+
+Y = numpy.loadtxt(p['theoryCls'].replace('scal','lensed'))
+unlensedCls = []
+lensedCls = []
+for i in xrange(int(sys.argv[2]),int(sys.argv[3])+1):
+    mapUL = liteMap.liteMapFromFits('unlensedMaps/unlensedCMB_%03d.fits'%i)
+    if i == 0:
+        apod = mapUL.copy()
+        apod.data[:] = 0.
+        apod.data[10:apod.Ny-10,10:apod.Nx-10] = 1.0
+        apod.data = scipy.ndimage.gaussian_filter(apod.data,5,mode='constant')
+        #apod.data /= apod.data.mean()
+
+    mapUL.data *= apod.data
+    p2d = fftTools.powerFromLiteMap(mapUL)
+    lL,lU,lb,clb,clerrb,w  = p2d.binInAnnuli('BIN_50_SPT',nearestIntegerBinning=True)
+    unlensedCls += [clb]
+    mapL  = liteMap.liteMapFromFits('lensedMaps/lensedCMB_%03d.fits'%i)
+    mapL.data *= apod.data
+    p2d = fftTools.powerFromLiteMap(mapL)
+    lL,lU,lb,clb,clerrb,w  = p2d.binInAnnuli('BIN_50_SPT',nearestIntegerBinning=True)
+    lensedCls += [clb]
+
+
+clUnlensed = numpy.mean(unlensedCls,axis=0)
+clLensed = numpy.mean(lensedCls,axis=0)
+#clUnlensedErr = numpy.std(unlensedCls,axis=0)
+fsky = apod.data.sum()/(apod.Ny*apod.Nx*1.0)
+print fsky
+pylab.semilogy(lb,fsky*lb**2/(2*pi)*clUnlensed,'o')
+pylab.semilogy(lb,fsky*lb**2/(2*pi)*clLensed,'o')
+pylab.plot(X[:,0], X[:,1])
+pylab.plot(Y[:,0], Y[:,1])
+pylab.xlim(10,5000)
+pylab.ylim(0.5,10000)
+utils.saveAndShow('cls.png')
+

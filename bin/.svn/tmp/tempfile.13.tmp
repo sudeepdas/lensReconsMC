@@ -1,0 +1,364 @@
+#!/usr/bin/env python
+#Given N-maps calculates cross-reconstruction between them
+
+from flipper import *
+#from lensTools  import *
+from numpy.fft import fftshift,fftfreq,fft2,ifft2
+from scipy import interpolate
+from scipy import *
+import os
+import random
+import pickle
+import numpy
+from fftTools import *
+
+def weightedBinInAnnuli(p2d,weightMap,binningFile,trimAtL,powerOfL):
+    binLo,binHi,binCent = fftTools.readBinningFile(binningFile)
+    id = numpy.where(binHi<trimAtL)
+    binHi = binHi[id]
+    binLo = binLo[id]
+    binCent = binCent[id]
+    binnedPower = binCent.copy()*0.
+    binCount = binCent.copy()*0.
+    weightedBincount = binCent.copy()
+    modIntLMap = numpy.array(p2d.modLMap + 0.5,dtype='int64')
+    for ibin in xrange(len(binHi)):
+        loc = numpy.where((modIntLMap >= binLo[ibin]) & (modIntLMap <= binHi[ibin]))
+        binMap = p2d.powerMap.copy()*0.
+        binMap[loc] = weightMap[loc]
+        binnedPower[ibin] = numpy.sum(p2d.powerMap*binMap*p2d.modLMap**powerOfL)/numpy.sum(binMap)
+        binCount[ibin] = len(loc[0])
+        weightedBincount[ibin] = 1./(numpy.sum(weightMap[loc]**2)/(numpy.sum(weightMap[loc]))**2)
+                                        #print binCount[ibin]/weightedBincount
+    return binLo,binHi,binCent,binnedPower, weightedBincount/2.
+
+def powerFromKMap(k1,k2,ft,ftret):
+    """
+    @brief Creates a power2D object from one power 2D object and two kmaps
+    """
+    p2d = ftret.copy()
+    mapFFT = k1.copy()
+    mapFFT2 = k2.copy()
+
+    area =ft.Nx*ft.Ny*ft.pixScaleX*ft.pixScaleY
+    p2d.powerMap = numpy.real(numpy.conjugate(mapFFT)*mapFFT2)#*area/(ft.Nx*ft.Ny*1.0)**2
+    
+    return p2d
+
+p = flipperDict.flipperDict()
+p.read_from_file(sys.argv[1])
+nullDir = p['nullDir']
+lensedDir = p['lensedDir']
+nMCs = p['nMCs']
+rootName = p['rootName']
+examplePatch = p['examplePatch']
+trimAtL = p['trimAtL']
+binningFile = p['binningFile']
+if binningFile == None:
+    binningFile = 'BIN_100_LOG'
+    print "binning file set to %s"%binningFile
+    
+exampleLiteMap = liteMap.liteMapFromFits(examplePatch)
+p2d = fftTools.powerFromLiteMap(exampleLiteMap)
+ftex = p2d.trimAtL(trimAtL)
+#indicesList = pickle.load(open(nullDir+'indicesList'+'000'+'0','r'))
+numDivs = p['numDivs']
+
+#import pickle
+
+weightMap = pickle.load(open('scatterFile'))
+weightMap = 1./weightMap.powerMap*2.
+weightMap[0,0] = weightMap[0,1]
+
+indicesList = []
+indList = []
+for i in xrange(numDivs):
+    for j in xrange(i):
+        indicesList += ["%d%d"%(j,i)]
+        
+        indList += [[i,j]] 
+print indicesList
+print indList
+
+# gets mean kappa from mcs
+for q in xrange(nMCs):
+    #for i in xrange(numDivs):
+    divMaps1 = []#numpy.arange(len(indicesList))
+    divMaps2 = []#numpy.arange(len(indicesList))
+    divMaps3 = []#numpy.arange(len(indicesList))
+    divMaps4 = []#numpy.arange(len(indicesList))
+    count = 0
+    for ind in indicesList:
+        divMaps1 += [pickle.load(open(nullDir+rootName+"%03d"%q+'_000'+'_'+ind))]
+        divMaps2 += [pickle.load(open(nullDir+rootName+"%03d"%q+'_001'+'_'+ind))]
+        divMaps3 += [pickle.load(open(nullDir+rootName+"%03d"%q+'_002'+'_'+ind))]
+        divMaps4 += [pickle.load(open(nullDir+rootName+"%03d"%q+'_003'+'_'+ind))]
+        
+        count += 1
+    divMaps1 = numpy.array(divMaps1)
+    divMaps2 = numpy.array(divMaps2)
+    divMaps3 = numpy.array(divMaps3)
+    divMaps4 = numpy.array(divMaps4)
+    
+    if q == 0:
+        allDivs1 = divMaps1
+        allDivs2 = divMaps2
+        allDivs3 = divMaps3
+        allDivs4 = divMaps4
+    else:
+        allDivs1[:] += divMaps1[:]
+        allDivs2[:] += divMaps2[:]
+        allDivs3[:] += divMaps3[:]
+        allDivs4[:] += divMaps4[:]
+
+allDivs1[:] /= nMCs
+allDivs2[:] /= nMCs
+allDivs3[:] /= nMCs
+allDivs4[:] /= nMCs
+
+pickle.dump(allDivs1,open('averageNullKappaMap1.pkl','w'))
+pickle.dump(allDivs2,open('averageNullKappaMap2.pkl','w'))
+pickle.dump(allDivs3,open('averageNullKappaMap3.pkl','w'))
+pickle.dump(allDivs4,open('averageNullKappaMap4.pkl','w'))
+
+
+
+patch1Power = []
+patch2Power = []
+patch3Power = []
+patch4Power = []
+
+
+# calculates mean power spectrum for each map
+for p in xrange(nMCs):
+    divMaps1 = []
+    divMaps2 = []
+    divMaps3 = []
+    divMaps4 = []
+    count = 0
+    for ind in indicesList:
+        divMaps1 += [pickle.load(open(lensedDir+rootName+"%03d"%p+'_000'+'_'+ind))]
+        divMaps2 += [pickle.load(open(lensedDir+rootName+"%03d"%p+'_001'+'_'+ind))]
+        divMaps3 += [pickle.load(open(lensedDir+rootName+"%03d"%p+'_002'+'_'+ind))]
+        divMaps4 += [pickle.load(open(lensedDir+rootName+"%03d"%p+'_003'+'_'+ind))]
+        count += 1
+
+    divMaps1 = numpy.array(divMaps1)
+    divMaps2 = numpy.array(divMaps2)
+    divMaps3 = numpy.array(divMaps3)
+    divMaps4 = numpy.array(divMaps4)
+    
+    divMaps1[:] -= allDivs1[:]
+    divMaps2[:] -= allDivs2[:]
+    divMaps3[:] -= allDivs3[:]
+    divMaps4[:] -= allDivs4[:]
+    nDivs = len(divMaps1)
+    count = 0
+    for i in xrange(nDivs):
+        for j in xrange(nDivs):#(i):
+            difference = 1
+            #for k in xrange(2):
+            #    for lll in xrange(2):
+            #        if (indicesList[i][k] == indicesList[j][lll]):
+            #            difference = 0
+            if difference:
+                print i,j,indicesList[i],indicesList[j], difference
+                crossPower1Old = powerFromKMap(divMaps1[i],divMaps1[j],p2d,ftex)
+                crossPower2Old = powerFromKMap(divMaps2[i],divMaps2[j],p2d,ftex)                
+                crossPower3Old = powerFromKMap(divMaps3[i],divMaps3[j],p2d,ftex)
+                crossPower4Old = powerFromKMap(divMaps4[i],divMaps4[j],p2d,ftex)
+                
+                if count == 0:
+                    crossPower1 = crossPower1Old.copy()
+                    crossPower2 = crossPower2Old.copy()
+                    crossPower3 = crossPower3Old.copy()
+                    crossPower4 = crossPower4Old.copy()
+                else:
+                    crossPower1.powerMap[:] += crossPower1Old.powerMap[:]
+                    crossPower2.powerMap[:] += crossPower2Old.powerMap[:]
+                    crossPower3.powerMap[:] += crossPower3Old.powerMap[:]
+                    crossPower4.powerMap[:] += crossPower4Old.powerMap[:]
+                    print 'adding power, n=', count
+            
+                count +=1
+    crossPower1Mean = crossPower1.copy()
+    crossPower2Mean = crossPower2.copy()
+    crossPower3Mean = crossPower3.copy()
+    crossPower4Mean = crossPower4.copy()
+    crossPower1Mean.powerMap[:] /= count
+    crossPower2Mean.powerMap[:] /= count
+    crossPower3Mean.powerMap[:] /= count
+    crossPower4Mean.powerMap[:] /= count
+<<<<<<< .mine
+    lL,lU,lBin,clBin1, plErr_0012,weights = crossPower1Mean.binInAnnuli(binningFile)
+    lL,lU,lBin,clBin2, plErr_0012,weights = crossPower2Mean.binInAnnuli(binningFile)
+    lL,lU,lBin,clBin3, plErr_0012,weights = crossPower3Mean.binInAnnuli(binningFile)
+    lL,lU,lBin,clBin4, plErr_0012,weights = crossPower4Mean.binInAnnuli(binningFile)
+=======
+    lL,lU,lBin,clBin1,weights,bla = crossPower1Mean.binInAnnuli('BIN_LENS')#BinInAnnuli(crossPower1Mean,weightMap,'BIN_LENS',3300,0)
+    lL,lU,lBin,clBin2,weights,bla = crossPower2Mean.binInAnnuli('BIN_LENS')#weightedBinInAnnuli(crossPower2Mean,weightMap,'BIN_LENS',3300,0)
+    lL,lU,lBin,clBin3,weights,bla = crossPower3Mean.binInAnnuli('BIN_LENS')#weightedBinInAnnuli(crossPower3Mean,weightMap,'BIN_LENS',3300,0)
+    lL,lU,lBin,clBin4,weights,bla = crossPower4Mean.binInAnnuli('BIN_LENS')#weightedBinInAnnuli(crossPower4Mean,weightMap,'BIN_LENS',3300,0)
+>>>>>>> .r204
+    patch1Power += [clBin1]
+    patch2Power += [clBin2]
+    patch3Power += [clBin3]
+    patch4Power += [clBin4]
+
+patch1PowerUn = []
+patch2PowerUn = []
+patch3PowerUn = []
+patch4PowerUn = []
+
+# mean unlensed power spectrum for each map
+for p in xrange(nMCs):
+    divMaps1 = []
+    divMaps2 = []
+    divMaps3 = []
+    divMaps4 = []
+    count = 0
+    for ind in indicesList:
+        divMaps1 += [pickle.load(open(nullDir+rootName+"%03d"%p+'_000'+'_'+ind))]
+        divMaps2 += [pickle.load(open(nullDir+rootName+"%03d"%p+'_001'+'_'+ind))]
+        divMaps3 += [pickle.load(open(nullDir+rootName+"%03d"%p+'_002'+'_'+ind))]
+        divMaps4 += [pickle.load(open(nullDir+rootName+"%03d"%p+'_003'+'_'+ind))]
+        count += 1
+    divMaps1 = numpy.array(divMaps1)
+    divMaps2 = numpy.array(divMaps2)
+    divMaps3 = numpy.array(divMaps3)
+    divMaps4 = numpy.array(divMaps4)
+
+    divMaps1[:] -= allDivs1[:]
+    divMaps2[:] -= allDivs2[:]
+    divMaps3[:] -= allDivs3[:]
+    divMaps4[:] -= allDivs4[:]
+    nDivs = len(divMaps1)
+    count = 0
+    for i in xrange(nDivs):
+        for j in xrange(nDivs):#i):
+            difference = 1
+            #for k in xrange(2):
+            #    for lll in xrange(2):
+            #        if (indList[i][k] == indList[j][lll]):
+            #            difference = 0
+            if difference:
+                print i,j,indList[i],indList[j], difference
+                crossPower1Old = powerFromKMap(divMaps1[i],divMaps1[j],p2d,ftex)
+                crossPower2Old = powerFromKMap(divMaps2[i],divMaps2[j],p2d,ftex)                
+                crossPower3Old = powerFromKMap(divMaps3[i],divMaps3[j],p2d,ftex)
+                crossPower4Old = powerFromKMap(divMaps4[i],divMaps4[j],p2d,ftex)
+                
+                if count == 0:
+                    crossPower1 = crossPower1Old.copy()
+                    crossPower2 = crossPower2Old.copy()
+                    crossPower3 = crossPower3Old.copy()
+                    crossPower4 = crossPower4Old.copy()
+                else:
+                    crossPower1.powerMap[:] += crossPower1Old.powerMap[:]
+                    crossPower2.powerMap[:] += crossPower2Old.powerMap[:]
+                    crossPower3.powerMap[:] += crossPower3Old.powerMap[:]
+                    crossPower4.powerMap[:] += crossPower4Old.powerMap[:]
+                    print 'adding power, n=', count
+            
+                count +=1
+    crossPower1Mean = crossPower1.copy()
+    crossPower2Mean = crossPower2.copy()
+    crossPower3Mean = crossPower3.copy()
+    crossPower4Mean = crossPower4.copy()
+    crossPower1Mean.powerMap[:] /= count
+    crossPower2Mean.powerMap[:] /= count
+    crossPower3Mean.powerMap[:] /= count
+    crossPower4Mean.powerMap[:] /= count
+<<<<<<< .mine
+    lL,lU,lBin,clBin1, plErr_0012,weights = crossPower1Mean.binInAnnuli(binningFile)
+    lL,lU,lBin,clBin2, plErr_0012,weights = crossPower2Mean.binInAnnuli(binningFile) 
+    lL,lU,lBin,clBin3, plErr_0012,weights = crossPower3Mean.binInAnnuli(binningFile)
+    lL,lU,lBin,clBin4, plErr_0012,weights = crossPower4Mean.binInAnnuli(binningFile)
+=======
+    lL,lU,lBin,clBin1,weights,bla = crossPower1Mean.binInAnnuli('BIN_LENS')#weightedBinInAnnuli(crossPower1Mean,weightMap,'BIN_LENS',3300,0)
+    lL,lU,lBin,clBin2,weights,bla = crossPower2Mean.binInAnnuli('BIN_LENS')###weightedBinInAnnuli(crossPower2Mean,weightMap,'BIN_LENS',3300,0)
+    lL,lU,lBin,clBin3,weights,bla = crossPower3Mean.binInAnnuli('BIN_LENS') #weightedBinInAnnuli(crossPower3Mean,weightMap,'BIN_LENS',3300,0)
+    lL,lU,lBin,clBin4,weights,bla = crossPower4Mean.binInAnnuli('BIN_LENS')#weightedBinInAnnuli(crossPower4Mean,weightMap,'BIN_LENS',3300,0)
+>>>>>>> .r204
+    patch1PowerUn += [clBin1]
+    patch2PowerUn += [clBin2]
+    patch3PowerUn += [clBin3]
+    patch4PowerUn += [clBin4]
+
+patchPowerTotal = patch1Power
+for var in xrange(len(patchPowerTotal)):
+    patchPowerTotal[var] += patch2Power[var] + patch3Power[var] + patch4Power[var]
+    patchPowerTotal[var] /= 4.
+
+patchPowerTotalUn = patch1PowerUn
+for var in xrange(len(patchPowerTotalUn)):
+    patchPowerTotalUn[var] += patch2PowerUn[var] + patch3PowerUn[var] + patch4PowerUn[var]
+    patchPowerTotalUn[var] /= 4.
+
+# get mean power spectrum overall by averaging map power spectra
+for r in xrange(nMCs):
+    if r == 0:
+        meanCls = patchPowerTotal[r].copy()
+    else:
+        meanCls += patchPowerTotal[r]
+meanCls[:] /= nMCs
+
+# scatter for each mean spec point
+for r in xrange(nMCs):
+    aCl = patchPowerTotal[r].copy()
+    if r == 0:
+        scatter = (aCl - meanCls)**2.
+    else:
+        scatter += (aCl - meanCls)**2.
+scatter[:] = numpy.sqrt(scatter[:]/nMCs)
+# calculate bias from unlensed mean spec
+for r in xrange(nMCs):
+    if r == 0:
+        meanClsUn = patchPowerTotalUn[r].copy()
+    else:
+        meanClsUn += patchPowerTotalUn[r]
+meanClsUn[:] /= nMCs
+
+pickle.dump(lBin,open('lBin.pkl','w'))
+pickle.dump(meanCls,open('meanCls2.pkl','w'))
+pickle.dump(meanClsUn,open('meanClsUn2.pkl','w'))
+pickle.dump(scatter,open('scatter2.pkl','w'))
+
+
+ymin = 1e-10
+
+g = pylab.gca()
+g.set_yscale('log',nonposy='clip')
+g.set_xscale('log')
+#pylab.plot(ells,kappaTrueAvg,label='true kappa')
+#pylab.plot(ells,kappaRecMinusAvg+nullbias,label='recwithoutnullbias')
+pylab.plot(lBin,meanCls,'o',label='lensed')
+pylab.plot(lBin,meanClsUn,label='unlensed')
+kappaRecMinusAvg = meanCls-meanClsUn
+pylab.plot(lBin,kappaRecMinusAvg,label='reconswithoutbias')
+#pylab.plot(ells,kappaBiasAvg,label='bias')
+#pylab.plot(ells,kappaRecMinusAvg,'o',label='rec. kappa - bias')
+kk = kappaRecMinusAvg.copy()
+
+
+err = scatter.copy()#/numpy.sqrt(4.)
+id = numpy.where((kappaRecMinusAvg-err) <0)
+print id
+errorlow = err.copy()
+errorlow[id] = kappaRecMinusAvg[id]*0.99
+
+pylab.errorbar(lBin,kappaRecMinusAvg,[errorlow,err],fmt="o",ecolor='k')
+
+id = numpy.where(kk<0)
+kk[id] = ymin
+#pylab.errorbar(ells[id],kk[id],[err[id]*0,err[id]+kappaRecMinusAvg[id]-kk[id]],fmt=None,ecolor='k')
+
+g.set_xlabel(r'$\ell$',fontsize=20)
+g.set_ylabel(r'$C_\ell$',fontsize=20)
+#pylab.ylim(1e-10,1e-4)
+#pylab.xlim(30,3000)
+g.set_xlim(49,3000)
+#g.set_ylim(ymin,1e-3)
+pylab.legend(loc='best')
+pylab.savefig('masterPlot.png')
+pylab.clf()

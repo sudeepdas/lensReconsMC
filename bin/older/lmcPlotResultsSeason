@@ -1,0 +1,50 @@
+#!/usr/bin/env python 
+from flipper import *
+import pickle
+
+p = flipperDict.flipperDict()
+p.read_from_file(sys.argv[1])
+tag = p['tag']
+
+X = numpy.loadtxt('/project/rbond/sudeep/theoryFiles/bode_almost_wmap5_lmax_1e4_scalCls.dat')
+tcmb = 2.726e6
+clkk = X[:,4]/(4.*tcmb**2)
+l = X[:,0]
+print sys.argv
+lBin = pickle.load(open("lBin.pkl"))
+clBin = pickle.load(open("meanCls_"+tag+'.pkl'))
+clBinUn = pickle.load(open("meanClsUn_"+tag+'.pkl'))
+clBinSigma = pickle.load(open("newScatter_"+tag+'.pkl'))
+fac = 1.
+pylab.plot(lBin,clBin,"o")
+pylab.plot(lBin,clBinUn*fac)
+pylab.errorbar(lBin,(clBin -clBinUn*fac),clBinSigma,fmt="o")
+print clBin
+print clBinUn
+pylab.plot(l,clkk)
+g = pylab.gca()
+g.set_yscale("log")
+g.set_xscale("log")
+pylab.xlim(10,3300)
+pylab.ylim(1e-10,1e-4) 
+pylab.savefig("clsSim_%s.png"%tag)
+
+pylab.clf()
+pylab.plot(lBin,clBin,"D",mfc="white",mec="blue")
+pylab.plot(lBin,clBinUn,"o",mfc="white",mec="green")
+pylab.errorbar(lBin,(clBin -clBinUn),clBinSigma,fmt="ro")
+
+print clBinUn
+print "sigma = ", clBinSigma
+pylab.plot(l,clkk)
+g = pylab.gca()
+#g.set_yscale("log")
+g.set_xscale("log")
+pylab.xlim(10,3000)
+pylab.ylim(-0.5e-7,12e-7) 
+#pylab.ylim(1e-10,1e-4)
+ston = numpy.sqrt(numpy.sum((clBin-clBinUn)**2/clBinSigma**2))
+pylab.text(1e3,4e-7,'S/N=%3.1f'%ston)
+print ston
+pylab.savefig("clsSimLinear_%s.png"%tag)
+

@@ -1,0 +1,5 @@
+nMaps = 4
+noiseUkArcmin = 1.0
+mapDir = 'randomMaps'
+thetaFWHMarcmin = 1.4
+parentMapFile = '/scr/queequeg1/shared/projects/lensing/sims/lensedCMB/noBeam/patches/patch001_0'

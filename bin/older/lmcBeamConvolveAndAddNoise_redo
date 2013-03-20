@@ -1,0 +1,146 @@
+#!/usr/bin/env python
+#code to generate mock season and sub-season maps from sims
+
+from flipper import *
+import csFilter
+import pickle
+
+def cosineSqFilter(map,lMin,lMax,vkMaskLimits=None):
+    filteredMap = map.copy()
+    ft = fftTools.fftFromLiteMap(map)
+    ell = ft.modLMap
+    idSub = numpy.where((ell> lMin) & (ell <lMax))
+    idLow = numpy.where(ell<lMin)  
+    filter = (ell*0.+1.0)
+    filter[idLow] = 0.
+    filter[idSub] *= (numpy.cos((lMax - ell[idSub])/(lMax-lMin)*numpy.pi/2.))**2
+    ft.kMap[:] *= filter[:]
+    if vkMaskLimits != None:
+        #Yank the k-mode
+        idvk = numpy.where((ft.lx >vkMaskLimits[0]) & (ft.lx<vkMaskLimits[1]))
+        ft.kMap[:,idvk] = 0.
+    
+    filteredMap.data[:] = ft.mapFromFFT()
+    return filteredMap
+
+
+
+def addWhiteNoise(map,rmsArcmin):
+    """
+    Adds white noise to a given map; returns a new map
+    """
+    noisyMap = map.copy()
+    if rmsArcmin == 0.0:
+        pass
+    else:
+        radToMin = 180/numpy.pi*60
+        pixArea = radToMin**2 * map.pixScaleX*map.pixScaleY
+        rms = rmsArcmin/numpy.sqrt(pixArea)
+        
+        noise = numpy.random.normal( scale = rms, size = map.data.shape )
+        
+        noisyMap.data[:] += noise[:]
+
+        
+    return noisyMap
+
+
+def getNoiseFromTemplate(templateDir,freq,patchID,iDiv):
+    print "Template dir %s"%templateDir
+    
+    nn = pickle.load(open("%s/noiseTemplate_patch_%s_%03d.pkl"%\
+                     (templateDir,freq,patchID)))
+    w = liteMap.liteMapFromFits("%s/weight_%s_%03d_%d"%\
+                                (templateDir,freq,patchID,iDiv))
+    noise = w.copy()
+    noise.data[:] = 0.0
+    noise.fillWithGRFFromTemplate(nn,bufferFactor=1)
+    noise.data[:] /= (numpy.sqrt(w.data[:]))
+    
+    return noise, w
+
+
+
+
+if __name__=="__main__":
+    p = flipperDict.flipperDict()
+    p.readFromFile(sys.argv[1])
+
+    
+    if len(sys.argv) > 2:
+        iterNum = eval(sys.argv[2])
+    else:
+        iterNum = 0
+
+    templates = p['templates']
+        
+    noiseFromTemplate = p['noiseFromTemplate']
+    inputDir = p['inputDir']
+    if inputDir == None:
+        inputDir = '.'
+    
+    # Number of sub-season divisions to make #(assumes equal noise)
+    freqs = p['frequencies']
+    hpf = p['highPassCosSqFilter']
+    nDivs = 4 #p['nDivs']
+    
+    outDirL = "lensedMaps_CMBplusNoise_%03d"%iterNum
+    outDirNL = "unlensedMaps_CMBplusNoise_%03d"%iterNum
+    try:
+        os.mkdir(outDirL)
+        os.mkdir(outDirNL)
+    except:
+        pass
+
+    inputDirL = inputDir+'/lensedCMBMaps_%03d'%iterNum
+    inputDirNL = inputDir+'/unlensedCMBMaps_%03d'%iterNum
+        
+    i = 0 
+    for template in templates:
+        print "Reading %s/patch_%03d.fits"%(inputDirL,i)
+        m = liteMap.liteMapFromFits("%s/lensedCMB_%03d.fits"%(inputDirL,i))
+        print "Reading %s/patch_%03d.fits"%(inputDirNL,i)
+        mn = liteMap.liteMapFromFits("%s/unlensedCMB_%03d.fits"%(inputDirNL,i))
+
+        for freq in freqs:
+
+            ell, f_ell = numpy.transpose(numpy.loadtxt(p['beamFile_%s'%freq]))
+            t = csFilter.makeTemplate( m, f_ell, ell, ell.max())
+            
+            ft = numpy.fft.fft2(m.data)
+            ft *= t.data
+            #m.data = numpy.real(numpy.fft.ifft2(ft)) 
+            
+            
+            ftn = numpy.fft.fft2(mn.data)
+            ftn *= t.data
+            #mn.data = numpy.real(numpy.fft.ifft2(ftn))
+                    
+        
+        
+            for j in xrange(nDivs):
+
+
+                if hpf['apply']:
+                    print "Applying high pass filter"
+                    m = cosineSqFilter(m,hpf['lMin'],hpf['lMax'])
+                    mn = cosineSqFilter(mn,hpf['lMin'],hpf['lMax'])
+                
+                if not(noiseFromTemplate['apply']):
+                    ms = addWhiteNoise(m,p['rmsArcmin_%s'%freq]*numpy.sqrt(nDivs))
+                    mns = addWhiteNoise(mn,p['rmsArcmin_%s'%freq]*numpy.sqrt(nDivs))
+                else:
+                    ms = m.copy()
+                    mns = mn.copy()
+                    
+                    noise, w = getNoiseFromTemplate(noiseFromTemplate['templateDir'],freq,i,j)
+                    ms.data[:] += noise.data[:]
+                    mns.data[:] += noise.data[:]
+
+                
+                    
+                ms.writeFits("%s/patch_%s_%03d_%d"%(outDirL,freq,i,j),overWrite=True)
+                mns.writeFits("%s/patch_%s_%03d_%d"%(outDirNL,freq,i,j),overWrite=True)
+                
+                print "Done freq %s patch %03d split %d"%(freq, i,j)
+        i += 1 

@@ -1,0 +1,214 @@
+from flipper import *
+import pickle
+from numpy.fft import fft2,ifft2,fftshift
+from lmcMisc import *
+import lmcMisc
+import scipy
+
+
+
+class superMap:
+    def __init__(self,map,noisePower,beamFile,ell,cEllModel,trimAtL=None,\
+                 randomizePhase = False):
+        
+        self.map = map
+        self.ftMap = fftTools.fftFromLiteMap(map)
+        if randomizePhase:
+            ranP = numpy.random.rand(*map.data.shape)*2.*numpy.pi
+            phases = numpy.exp(1j*ranP)
+            self.ftMap.kMap[:] *= phases[:]
+            
+        twoDBeam = self.ftMap.kMap*0.+1.
+        print 'aaa', beamFile
+        l, bl = numpy.loadtxt(beamFile,unpack=True)
+        print 'blabla',l, bl
+        print len(l), len(bl)
+        #pylab.clf()
+        #pylab.loglog(l,bl)
+        #pylab.savefig('beam.png')
+        #pylab.clf()
+        twoDBeam = lmcMisc.makeTemplate(l,bl,self.ftMap)
+        self.twoDBeam = twoDBeam
+        del twoDBeam
+        self.power2d = fftTools.powerFromLiteMap(map)
+        self.ftMap.kMap[:] /= self.twoDBeam[:]#bug?
+        self.power2d.powerMap[:] /= (self.twoDBeam[:] *self.twoDBeam[:])
+        if trimAtL != None:
+            self.ftMapTrim = self.ftMap.trimAtL(trimAtL)
+        self.trimAtL = trimAtL
+        self.noisePower = noisePower/self.twoDBeam/self.twoDBeam
+        self.ell = ell
+        self.cEllModel = cEllModel
+        
+        
+        
+        self.twoDModel = lmcMisc.makeTemplate(ell,cEllModel,self.ftMap)
+        self.filter = None
+        self.filteredMap = None  
+        
+    def makeFilter(self,type,keepAnnulus=None):
+        """
+        returns low/high pass filtered, beam deconvolved ftMap
+        """
+        if type !='lowPass' and type !='highPass':
+            raise ValueError, 'type must be lowPass or highPass'
+        if type == 'lowPass':
+            self.filter = self.twoDModel/(self.twoDModel + self.noisePower)
+        else:
+            self.filter = (self.twoDModel*0.+1.)\
+                          /(self.twoDModel + self.noisePower)
+        id1 = numpy.where((self.ftMap.modLMap > self.trimAtL))
+        self.filter[id1] = 0.
+        if keepAnnulus != None:
+            print "Keepin annulus : %s"%keepAnnulus
+            id = numpy.where((self.ftMap.modLMap < keepAnnulus[0]))
+            self.filter[id] = 0.
+            id = numpy.where((self.ftMap.modLMap > keepAnnulus[1]))
+            self.filter[id] = 0.
+        self.filteredMap = self.filter*self.ftMap.kMap
+
+
+def getKappa(sm0,sm1,crossPowerEstimate,keepAnnulus0=None, keepAnnulus1=None):
+    # if sm0.trimAtL != None:
+    #    assert(sm0.trimAtL == sm1.trimAtL)
+    #    crossPowerEstimate = crossPowerEstimate.trimAtL(sm0.trimAtL)
+
+    sm1.makeFilter(type='lowPass',keepAnnulus=keepAnnulus0)
+    sm0.makeFilter(type='highPass',keepAnnulus= keepAnnulus1)
+
+    ftex, tempKappa, ignore = makeKappaMap(sm0,sm1,crossPowerEstimate/sm0.twoDBeam**2) ##HHHo?
+    return tempKappa*sm0.power2d.pixScaleX*sm0.power2d.pixScaleY*numpy.sqrt(sm0.power2d.pixScaleX*sm0.power2d.pixScaleY\
+                                            /sm0.power2d.Nx/sm0.power2d.Ny)
+
+def makeKappaMap(sm0,sm1,crossPowerEstimate):
+    """
+    @brief Finds the normalization and noise bias of the lensing filter.
+    This is different from normalize() as it does all operations in
+    the 2-D L-space without resorting to interpolations.
+    Uses NofL2D.
+    @param trim2DAtL trim the 2D calculation at a given L
+    
+    """
+    
+    ft = sm0.power2d.copy()#fftTools.powerFromLiteMap(sm0.map) #self.powerMap1 HHHo
+    trimAtL = sm0.trimAtL
+    if sm0.trimAtL != None:
+        ft = ft.trimAtL(trimAtL)
+    # print ftLow.kMap, 'km'
+    lx = numpy.fft.fftshift(ft.lx)
+    ly = numpy.fft.fftshift(ft.ly)
+    deltaLy = numpy.abs(ly[0]-ly[1])
+    deltaLx = numpy.abs(lx[0]-lx[1])
+    modLMap = numpy.fft.fftshift(ft.modLMap)
+    thetaMap = numpy.fft.fftshift(ft.thetaMap)
+    cosTheta = numpy.cos(thetaMap*numpy.pi/180.)
+    LhatDotEl = modLMap*cosTheta
+    dims = [ft.Ny,ft.Nx]
+    
+    ftb = sm0.power2d.copy()#fftTools.powerFromLiteMap(sm0.map) HHHo Q
+    lxb = numpy.fft.fftshift(ftb.lx)# Q
+    lyb = numpy.fft.fftshift(ftb.ly) # Q
+    ftKappa = sm0.ftMap.kMap #HHHo
+    kappaMap = trimShiftKMap(numpy.fft.fftshift(ftKappa),trimAtL,0,0,lxb,lyb)
+    highPassFilteredMap = trimShiftKMap(numpy.fft.fftshift(sm0.filteredMap),trimAtL,0,0,lxb,lyb)#used to be self.highPassKMap HHHf Q
+    hpFilterM = trimShiftKMap(numpy.fft.fftshift(sm0.filter),trimAtL,0,0,lxb,lyb)#used to be self.highPassF0 HHHf
+        
+    lowPassBackup0 = sm1.filteredMap.copy()#self.lowPassKMap.copy() HHHo Q
+    lowPassBackup = numpy.fft.fftshift(lowPassBackup0)#Q
+    lpFilterB0 = sm1.filter.copy()#self.lowPassF0.copy() HHHo
+    lpFilterB = numpy.fft.fftshift(lpFilterB0)
+    lowPassFilteredMap0 = sm1.filteredMap.copy()#self.lowPassKMap.copy() HHHo
+    lowPassFilteredMap = numpy.fft.fftshift(lowPassFilteredMap0)
+    lpFilterM0 = sm1.filter.copy()#self.lowPassF0.copy() HHHo
+    lpFilterM = numpy.fft.fftshift(lpFilterM0)
+
+    print lxb,'this is length'
+    lowPassFilteredMap = mapFlip(lowPassBackup,lxb,lyb) #numpy.conjugate(lowPassBackup) #Q
+    lpFilterM = mapFlip(lpFilterB,lxb,lyb)
+    
+    lxMap = highPassFilteredMap.copy()
+    lyMap = highPassFilteredMap.copy()
+    print 'a'
+    for p in xrange(len(ly)):
+        lxMap[p,:] = lx[:] #Q
+
+    for q in xrange(len(lx)):
+        lyMap[:,q] = ly[:]  #Q
+    print 'b'
+    count = 0.
+    normalizationNew = kappaMap.copy()
+    noisebias = kappaMap.copy()
+    cl0 = trimShiftKMap(numpy.fft.fftshift(crossPowerEstimate),trimAtL,0,0,lxb,lyb) # HHH?
+    print 'c'
+    clN = trimShiftKMap(numpy.fft.fftshift(sm0.noisePower+crossPowerEstimate),trimAtL,0,0,lxb,lyb) # HHH??
+    print "p,q are:",p,q
+    newLpFilterM = trimShiftKMap(numpy.fft.fftshift(sm1.filter),trimAtL,0,0,lxb,lyb)#used to be self.lowPassF0 HHHo
+    print '1'
+    newHpFilterMFlip = mapFlip(numpy.fft.fftshift(sm0.filter),lxb,lyb)#used to be self.highPassF0 HHHo
+    print '2'
+    clNFlip = mapFlip(numpy.fft.fftshift(sm0.noisePower+crossPowerEstimate),lxb,lyb) # HHH??
+        
+        
+    for i in xrange(len(ly)):
+        a = time.time()
+        for j in xrange(len(lx)):
+            count += 1
+            kappaMap[i,j], normalizationNew[i,j], ele, timeratio, timeratio2 = kappaIntegral(crossPowerEstimate,deltaLx,deltaLy,lx[j],\
+                                                                                                                      ly[i],lxMap,lyMap,lxb,lyb,highPassFilteredMap,lowPassFilteredMap,hpFilterM,lpFilterM,trimAtL,cl0,clN,clNFlip,newLpFilterM,newHpFilterMFlip) #  #all fftsh
+            if not (normalizationNew[i,j] ==  normalizationNew[i,j]):
+                normalizationNew[i,j] = normalizationNew[i,j-1]
+            #if not (noisebias[i,j] ==  noisebias[i,j]):
+             #   noisebias[i,j] = noisebias[i,j-1]
+            if j == 50+i:
+                print 'values k,n1,n2,el', kappaMap[i,j], normalizationNew[i,j]
+                print 'time ratio:', timeratio, timeratio2
+        b = time.time()
+        print i, len(ly), 'time=', (b-a)
+        
+    #ftbla = ft.copy()
+    #ftbla.powerMap = numpy.abs(numpy.fft.ifftshift(kappaMap))
+    #ftbla.plot(zoomUptoL =3000, log=True)
+    #pylab.savefig('kapM.png')
+    #lL,lU,lBin,clNo1,err,w = ftbla.binInAnnuli('BIN_100_LOG')  
+    #pickle.dump(clNo1,open('lensedkNew.pkl','w'))   
+    #self.kappaMap = numpy.fft.ifftshift(kappaMap)
+        
+    ftransf = ft.copy()
+        
+    return ftransf, numpy.fft.ifftshift(kappaMap), normalizationNew
+
+
+def kappaIntegral(crossPowerEstimate,deltaLx,deltaLy,Lx,Ly,lx,ly,lxb,lyb,hpKMap,lpKMapMinl,hpf,lpf,trimAtL,cl0,clN,clNFlip,lpFTrim,hpFFlip):
+    """
+    @brief Computes kappa at a given L
+    @param L the multipole to calculate at.
+    """
+        
+    one = time.time()
+    Lsqrd = Lx**2. + Ly**2.
+    LdotEl = Lx*lx + Ly*ly
+    LdotElPrime = Lx**2. + Ly**2. - (Lx*lx+Ly*ly)#Q
+    three = time.time()
+    lowPassShifted = trimShiftKMap(lpKMapMinl,trimAtL,-Lx,-Ly,lxb,lyb) #Q
+    four = time.time()
+
+    highPass = hpKMap #Q
+    kint = 1./(2.*numpy.pi)**2.*highPass*lowPassShifted*LdotElPrime*\
+            deltaLx*deltaLy #check1: highPassQ, lowPassShiftedQ, ldotElPrimeQ
+    two = time.time()
+    diff = two - one
+        
+    kappa = kint.sum()
+        
+    diff2 = four - three
+
+    clL = trimShiftKMap(numpy.fft.fftshift(crossPowerEstimate),trimAtL,-Lx,-Ly,lxb,lyb) # used to be self.crossP1 HHH??
+    lpsf = trimShiftKMap(lpf,trimAtL,-Lx,-Ly,lxb,lyb)#(hpFFlip,trimAtL,-Lx,-Ly,lxb,lyb)
+    nint = 2./Lsqrd*1./(2.*numpy.pi)**2.*(hpf*lpsf)*LdotElPrime*(LdotElPrime*clL+LdotEl*cl0)*\
+            deltaLx*deltaLy #hpfQ lpsfQ
+    norm = 1./nint.sum()
+    kappa *= norm ############NOT NORMALIZING CAREFUL!!!!!
+
+    return kappa, norm,  numpy.sqrt(Lsqrd), diff, diff2
+    
+    

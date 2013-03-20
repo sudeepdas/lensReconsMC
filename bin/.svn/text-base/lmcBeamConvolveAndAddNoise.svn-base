@@ -1,0 +1,247 @@
+#!/usr/bin/env python
+#code to generate mock season and sub-season maps from sims
+
+from flipper import *
+import csFilter
+import pickle
+from generateRandomPoisson import fillWithPoissonRandomField
+
+def cosineSqFilter(map,lMin,lMax,vkMaskLimits=None):
+    filteredMap = map.copy()
+    ft = fftTools.fftFromLiteMap(map)
+    ell = ft.modLMap
+    idSub = numpy.where((ell> lMin) & (ell <lMax))
+    idLow = numpy.where(ell<lMin)  
+    filter = (ell*0.+1.0)
+    filter[idLow] = 0.
+    filter[idSub] *= (numpy.cos((lMax - ell[idSub])/(lMax-lMin)*numpy.pi/2.))**2
+    ft.kMap[:] *= filter[:]
+    if vkMaskLimits != None:
+        #Yank the k-mode
+        idvk = numpy.where((ft.lx >vkMaskLimits[0]) & (ft.lx<vkMaskLimits[1]))
+        ft.kMap[:,idvk] = 0.
+    
+    filteredMap.data[:] = ft.mapFromFFT()
+    return filteredMap
+
+
+
+def addWhiteNoise(map,rmsArcmin):
+    """
+    Adds white noise to a given map; returns a new map
+    """
+    noisyMap = map.copy()
+    if rmsArcmin == 0.0:
+        pass
+    else:
+        radToMin = 180/numpy.pi*60
+        pixArea = radToMin**2 * map.pixScaleX*map.pixScaleY
+        rms = rmsArcmin/numpy.sqrt(pixArea)
+        
+        noise = numpy.random.normal( scale = rms, size = map.data.shape )
+        
+        noisyMap.data[:] += noise[:]
+
+        
+    return noisyMap
+
+
+def getNoiseFromTemplate(templateDir,freq,patchID,iDiv,seasonNoise=False,nDivs=4):
+    print "Template dir %s"%templateDir
+    
+    nn = pickle.load(open("%s/noiseTemplate_patch_%s_%03d.pkl"%\
+                     (templateDir,freq,patchID)))
+    if not seasonNoise:
+        w = liteMap.liteMapFromFits("%s/weight_%s_%03d_%d"%\
+                                    (templateDir,freq,patchID,iDiv))
+    else:
+        for j in xrange(nDivs):
+            if j==0:
+                w = liteMap.liteMapFromFits("%s/weight_%s_%03d_%d"%\
+                                            (templateDir,freq,patchID,j))
+            else:
+                w0 =  liteMap.liteMapFromFits("%s/weight_%s_%03d_%d"%\
+                                              (templateDir,freq,patchID,j))
+                w.data[:] += w0.data[:]
+                
+    noise = w.copy()
+    noise.data[:] = 0.0
+    noise.fillWithGRFFromTemplate(nn,bufferFactor=1)
+    noise.data[:] /= (numpy.sqrt(w.data[:]))
+    
+    return noise, w
+
+
+2
+
+if __name__=="__main__":
+    p = flipperDict.flipperDict()
+    p.readFromFile(sys.argv[1])
+
+    
+    if len(sys.argv) > 2:
+        iterNum = eval(sys.argv[2])
+    else:
+        iterNum = 0
+
+    templates = p['templates']
+        
+    noiseFromTemplate = p['noiseFromTemplate']
+    inputDir = p['inputDir']
+    if inputDir == None:
+        inputDir = '.'
+    
+    # Number of sub-season divisions to make #(assumes equal noise)
+    freqs = p['frequencies']
+    hpf = p['highPassCosSqFilter']
+    nDivs = 4 #p['nDivs']
+
+    # If the noise is the multiplied by a factor?
+
+    noiseFactor = p['noiseFactor']
+    if noiseFactor == None: noiseFactor = 1.0
+
+
+    # Are point sources to be added?
+    addPS = p['addPS']
+    radDict = p['radioModel']
+    irDict = p['irModel']
+    
+
+    
+    outDirL = "lensedMaps_CMBplusNoise_%03d"%iterNum
+    outDirNL = "unlensedMaps_CMBplusNoise_%03d"%iterNum
+    if addPS:
+        outDirL = "lensedMaps_CMBplusPSPlusNoise_%03d"%iterNum
+        outDirNL = "unlensedMaps_CMBplusPSPlusNoise_%03d"%iterNum
+        
+    try:
+        os.mkdir(outDirL)
+    except:
+        pass
+
+    try:
+        os.mkdir(outDirNL)
+    except:
+        pass
+
+    inputDirL = 'lensedCMBMaps_%03d'%iterNum
+    
+    if p['unlensedInputPrefix'] == None:
+        inputDirNL = 'unlensedCMBMaps_%03d'%iterNum
+    else:
+        inputDirNL = p['unlensedInputPrefix']+'_%03d'%iterNum
+        
+    if p['lensedInputPrefix'] == None:
+        inputDirL = 'lensedCMBMaps_%03d'%iterNum
+    else:
+        inputDirL = p['lensedInputPrefix']+'_%03d'%iterNum
+    
+
+    i = 0 
+    for template in templates:
+        print "Reading %s/patch_%03d.fits"%(inputDirL,i)
+        m = liteMap.liteMapFromFits("%s/lensedCMB_%03d.fits"%(inputDirL,i))
+        print "Reading %s/patch_%03d.fits"%(inputDirNL,i)
+        mn = liteMap.liteMapFromFits("%s/unlensedCMB_%03d.fits"%(inputDirNL,i))
+
+        for freq in freqs:
+
+
+            # add point sources (if applicable)
+            if addPS:
+                print " ... adiing point sources ..."
+                sr = m.pixScaleX*m.pixScaleY
+                
+                mapRad = fillWithPoissonRandomField(m,\
+                                                   radDict['Smin']/1000.,\
+                                                   radDict['Smax']/1000., \
+                                                   dS = radDict['dS']/1000.,\
+                                                   radModel=radDict['modelFile'],\
+                                                   irModel=irDict['modelFile'],\
+                                                   factorToffRad = 0.34,\
+                                                   factorToffIR = 0.0)
+                
+                mapIR = fillWithPoissonRandomField(m,\
+                                                   irDict['Smin']/1000.,\
+                                                   irDict['Smax']/1000., \
+                                                   dS = irDict['dS']/1000.,\
+                                                   radModel=radDict['modelFile'],\
+                                                   irModel=irDict['modelFile'],\
+                                                   factorToffRad = 0.00,\
+                                                   factorToffIR = 1.0)
+                
+
+                mapRad.data[:] /= sr
+                mapRad.convertToMicroKFromJyPerSr(freq)
+                mapIR.data[:] /= sr
+                mapIR.convertToMicroKFromJyPerSr(freq)
+                
+                if freq == 218:
+                    g_218 = 3.02
+                    g_148 = 1.71
+                    mapRad.data[:] *= g_218/g_148*(218./148.)**(radDict['spectral_index']-2)
+                    mapIR.data[:] *= g_218/g_148*(218./148.)**(irDict['spectral_index']-2)
+                    
+                    
+                    
+                    
+                m.data[:] += (mapRad.data[:] + mapIR.data[:])
+                mn.data[:] += (mapRad.data[:] + mapIR.data[:])
+                
+                del mapRad
+                del mapIR
+                
+            # following is beam convolution 
+            ell, f_ell = numpy.transpose(numpy.loadtxt(p['beamFile_%s'%freq]))
+            t = csFilter.makeTemplate( m, f_ell, ell, ell.max())
+            
+            ft = numpy.fft.fft2(m.data)
+            ft *= t.data
+            m.data = numpy.real(numpy.fft.ifft2(ft)) 
+            
+            
+            ftn = numpy.fft.fft2(mn.data)
+            ftn *= t.data
+            mn.data = numpy.real(numpy.fft.ifft2(ftn))
+            
+        
+        
+            for j in xrange(nDivs):
+
+
+                if hpf['apply']:
+                    print "Applying high pass filter"
+                    mc = cosineSqFilter(m,hpf['lMin'],hpf['lMax'])
+                    mnc = cosineSqFilter(mn,hpf['lMin'],hpf['lMax'])
+                
+                if not(noiseFromTemplate['apply']):
+                    ms = addWhiteNoise(mc,p['rmsArcmin_%s'%freq]*numpy.sqrt(nDivs))
+                    mns = addWhiteNoise(mnc,p['rmsArcmin_%s'%freq]*numpy.sqrt(nDivs))
+                    if j ==0: # make a season noise map
+                        mSeason = addWhiteNoise(mc,p['rmsArcmin_%s'%freq])
+                        mnSeason = addWhiteNoise(mnc,p['rmsArcmin_%s'%freq])
+                else:
+                    ms = mc.copy()
+                    mns = mnc.copy()
+                    
+                    noise, w = getNoiseFromTemplate(noiseFromTemplate['templateDir'],freq,i,j)
+                    ms.data[:] += noise.data[:]*noiseFactor
+                    mns.data[:] += noise.data[:]*noiseFactor
+
+                    if j ==0: # make a season noise map
+                        mSeason = mc.copy()
+                        mnSeason = mnc.copy()
+                        noise, w = getNoiseFromTemplate(noiseFromTemplate['templateDir'],freq,i,j,seasonNoise=True)
+                        mSeason.data[:] += noise.data[:]*noiseFactor
+                        mnSeason.data[:] += noise.data[:]*noiseFactor
+                        
+                    
+                ms.writeFits("%s/patch_%s_%03d_%d"%(outDirL,freq,i,j),overWrite=True)
+                mns.writeFits("%s/patch_%s_%03d_%d"%(outDirNL,freq,i,j),overWrite=True)
+                if j==0: #write out the season map
+                    mSeason.writeFits("%s/patch_%s_%03d_all"%(outDirL,freq,i),overWrite=True)
+                    mnSeason.writeFits("%s/patch_%s_%03d_all"%(outDirNL,freq,i),overWrite=True)
+                    
+                print "Done freq %s patch %03d split %d"%(freq, i,j)
+        i += 1 

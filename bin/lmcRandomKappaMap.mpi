@@ -1,0 +1,45 @@
+#!/usr/bin/env python
+from flipper import *
+import time
+
+from mpi4py import MPI
+
+
+comm = MPI.COMM_WORLD
+rank = comm.Get_rank()
+size = comm.Get_size()
+
+print rank, size
+
+p = flipperDict.flipperDict()
+p.readFromFile(sys.argv[1])
+
+iStart = p['iStart']
+iStop = p['iStop']
+
+delta = (iStop - iStart)/(size-1)
+
+if delta == 0:
+    raise ValueError, 'Too many processors for too small a  loop!'
+
+print "delta=", delta
+
+iMin = iStart+rank*delta
+
+iMax = iStart+(rank+1)*delta
+
+
+
+if iMax>iStop:
+    iMax = iStop
+elif (iMax > (iStop - delta)) and iMax <iStop:
+    iMax = iStop
+    
+
+print "iMin,iMax,rank", iMin,iMax,rank
+
+
+for i in xrange(iMin,iMax):
+    print "generating kappa in iteration %03d"%i
+    os.system("lmcRandomKappaMap %s %s"%(sys.argv[1],i))
+    

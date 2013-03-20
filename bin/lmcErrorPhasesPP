@@ -1,0 +1,233 @@
+#!/usr/bin/env python
+#Given N-maps calculates cross-reconstruction between them
+
+from flipper import *
+#from lensTools  import *
+from numpy.fft import fftshift,fftfreq,fft2,ifft2
+from scipy import interpolate
+from scipy import *
+import os
+import random
+import pickle
+import numpy
+from fftTools import *
+
+def weightedBinInAnnuli(p2d,weightMap,binningFile,trimAtL,powerOfL,\
+                        varianceMap=None):
+    binLo,binHi,binCent = fftTools.readBinningFile(binningFile)
+    id = numpy.where(binHi<trimAtL)
+    binHi = binHi[id]
+    binLo = binLo[id]
+    binCent = binCent[id]
+    binnedPower = binCent.copy()*0.
+    binCount = binCent.copy()*0.
+    weightedBincount = binCent.copy()
+    binnedVar = binCent.copy()*0
+    
+    modIntLMap = numpy.array(p2d.modLMap + 0.5,dtype='int64')
+    for ibin in xrange(len(binHi)):
+        loc = numpy.where((modIntLMap >= binLo[ibin]) & (modIntLMap <= binHi[ibin]))
+        binMap = numpy.nan_to_num(p2d.powerMap.copy()*0.)
+        binMap[loc] = weightMap[loc]
+        binnedPower[ibin] = numpy.sum(numpy.nan_to_num(p2d.powerMap)*\
+                                      binMap*p2d.modLMap**powerOfL)/numpy.sum(binMap)
+        print "binnedPower", binnedPower[ibin]
+        if varianceMap != None:
+            binnedVar[ibin] = 2.0*numpy.sum(numpy.nan_to_num(varianceMap)\
+                                        *binMap**2*p2d.modLMap**powerOfL)/(numpy.sum(binMap))**2
+            
+        binCount[ibin] = len(loc[0])
+        weightedBincount[ibin] = 1./(numpy.sum(weightMap[loc]**2)/(numpy.sum(weightMap[loc]))**2)
+        # print binCount[ibin]/weightedBincount
+    if varianceMap != None:
+        return binLo,binHi,binCent,binnedPower, weightedBincount/2.,binnedVar
+    else:
+        return binLo,binHi,binCent,binnedPower, weightedBincount/2.
+
+def powerFromKMap(k1,k2,ft,ftret):
+    """
+    @brief Creates a power2D object from one power 2D object and two kmaps
+    """
+    p2d = ftret.copy()
+    mapFFT = k1.copy()
+    mapFFT2 = k2.copy()
+
+    area =ft.Nx*ft.Ny*ft.pixScaleX*ft.pixScaleY
+    p2d.powerMap = numpy.real(numpy.conjugate(mapFFT)*mapFFT2)#*area/(ft.Nx*ft.Ny*1.0)**2
+    
+    return p2d
+
+p = flipperDict.flipperDict()
+p.read_from_file(sys.argv[1])
+nullDir = p['nullDir']
+lensedDir = p['lensedDir']
+nMCs = p['nMCs']
+nMCOld = p['nMOld']
+rootName = p['rootName']
+examplePatch = p['examplePatch']
+trimAtL = p['trimAtL']
+exampleLiteMap = liteMap.liteMapFromFits(examplePatch)
+p2d = fftTools.powerFromLiteMap(exampleLiteMap)
+ftex = p2d.trimAtL(trimAtL)
+#indicesList = pickle.load(open(nullDir+'indicesList'+'000'+'0','r'))
+numDivs = p['numDivs']
+mapList = p['mapList']
+tag = p['tag']
+indicesTag = p['indicesTag']
+binFile = p['binFile']
+weighting = p['weighting']
+numPhases = p['numPhases']
+oldNullDir = p['oldNullDir']
+ylim = p['ylim']
+showAL = p['showAL']
+if showAL == None:
+    showAL = True
+    
+if ylim == None:
+    ylim =  (-0.5e-7,4e-7)
+print ylim
+
+#print 'computing null kappa maps'
+unlensedCompilationDir = p['unlensedCompilationDir']
+X = numpy.loadtxt('/project/r/rbond/sudeep/lensMC2012/bode_almost_wmap5_lmax_1e4_scalCls.dat')
+tcmb = 2.726e6
+clkk = X[:,4]/(4.*tcmb**2)
+l = X[:,0]
+
+
+
+clMeans = []
+clVars  = []
+clSigmas = []
+
+for theMap in mapList:
+    patchPower = pickle.load(open('pPower'+theMap,'r'))
+    patchPower0 = patchPower.copy()
+    if unlensedCompilationDir  != None:
+        print "sub null"
+        patchPowerNull =  pickle.load(open('%s/pPower%s'\
+                                           %(unlensedCompilationDir,theMap),'r'))
+        patchPower -= patchPowerNull
+    
+    ftex.powerMap[:] = patchPower[:]
+#    ftex.powerMap[0,0] = 10000000000.####################CARE
+    patchPowerSquared = pickle.load(open('pPowerSquared'+theMap,'r'))
+    patchVar = numpy.nan_to_num(patchPowerSquared - patchPower0**2)
+    patchVarForWeight = patchVar
+    
+    if unlensedCompilationDir  != None:
+        print "null sqrd"
+        patchPowerSquaredNull =  pickle.load(open('%s/pPowerSquared%s'\
+                                              %(unlensedCompilationDir,theMap),'r'))
+    
+        print "null sqrd"
+        patchVarForWeight = numpy.nan_to_num(patchPowerSquaredNull - patchPowerNull**2)
+    
+    print patchVar
+    weightMap = 1./patchVarForWeight
+    weightMap = numpy.nan_to_num(weightMap)
+    if weighting:
+        print "applying 2D weights"
+        #weightMap = scipy.ndimage.gaussian_filter(weightMap, (3,3))
+        pass
+    else:
+        weightMap = weightMap*0. + 1.
+        weightMap[0,0] = 0.
+    lL,lU,lBin,clMean,weights,clVar = weightedBinInAnnuli(ftex,weightMap,binFile,trimAtL,0,patchVar)
+    clSd = numpy.sqrt(clVar)
+    pickle.dump([lBin,clMean,clSd],open("clPP_%s.pkl"%theMap,"w"))
+    clMeans += [clMean]
+    clVars += [clVar]
+    clSigmas += [clSd]
+
+    pylab.clf()
+    pylab.plot(l,clkk)
+    print "clmean", clMean
+    print "clsd", clSd
+    pylab.errorbar(lBin,clMean,clSd,fmt="o")
+    
+    g = pylab.gca()
+    # g.set_yscale("log")
+    g.set_xscale("log")
+    pylab.xlim(10,3000)
+    pylab.ylim(ylim)
+    pylab.title("patch_%s"%theMap)
+    pylab.savefig("clsPPMean_%s_%s.png"%(theMap,tag))
+    
+    
+
+optCls = lBin.copy()
+weighting = lBin.copy()
+for bla in xrange(len(mapList)):
+    if bla == 0:
+        optCls = clMeans[bla]/clVars[bla]
+        sum = 1./clVars[bla]
+    else:
+        optCls += clMeans[bla]/clVars[bla]
+        sum += 1./clVars[bla]
+        
+optCls /= sum
+finalScatter = numpy.sqrt(1./sum)
+
+pickle.dump([lBin,optCls,finalScatter],open('clsPP.pkl','w'))
+
+
+fig_width_pt = 246.0*1.2  # Get this from LaTeX using \showthe\columnwidth
+inches_per_pt = 1.0/72.27               # Convert pt to inch
+golden_mean = (sqrt(5)-1.0)/2.0         # Aesthetic ratio
+fig_width = fig_width_pt*inches_per_pt  # width in inches
+fig_height = fig_width*golden_mean      # height in inches
+fig_size =  [fig_width,fig_height]
+params = {'axes.labelsize': 10,
+          'text.fontsize': 10,
+          'legend.fontsize': 10,
+          'xtick.labelsize': 8.5,
+          'ytick.labelsize': 8,
+          'figure.figsize': fig_size,
+          'font.family':'serif'}
+pylab.rcParams.update(params)
+
+pylab.clf()
+pylab.figure()
+fig = pylab.figure()
+axes = pylab.Axes(fig,[.2,.2,.7,.7])
+fig.add_axes(axes) 
+
+
+pylab.plot(l,clkk,'k')
+pylab.errorbar(lBin,optCls,finalScatter,fmt="o",mec='k',mfc='r',ms=3.5)
+pylab.plot(l,clkk*0,'k--')
+g = pylab.gca()
+# g.set_yscale("log")
+g.set_xscale("log")
+pylab.xlim(10,3000)
+pylab.ylim(ylim)
+
+lBinTh, clBinTh = fftTools.binTheoryPower(l,clkk,binFile)
+
+id = numpy.where(lBin<3000)
+
+clSignal = optCls
+clBinSigma = finalScatter
+
+print lBin, clSignal[id]/clBinTh[id]
+# pylab.plot(lBinTh,clBinTh,"ko")
+AL = numpy.sum(clSignal[id]*clBinTh[id]/(clBinSigma[id]**2))/numpy.sum(clBinTh[id]**2/clBinSigma[id]**2)
+sigmaAL = numpy.sqrt(1./numpy.sum(clBinTh[id]**2/clBinSigma[id]**2))
+
+print AL, sigmaAL
+
+if showAL:
+    pylab.text(100,3.e-7,"$A_L = %3.2f \pm %3.2f$"%(AL,sigmaAL))
+
+
+
+
+pylab.xticks([10,100,1000])
+pylab.yticks([-0.5e-7,0.,1e-7,2.e-7,3.e-7,4.e-7])
+pylab.xlabel(r"$\ell$",fontsize=14)
+pylab.ylabel(r"$C_\ell^{\kappa\kappa}$",fontsize=14)
+pylab.savefig("clsSimGlobalMean_%s.png"%tag)
+
+pylab.savefig("clsSimGlobalMean_%s.eps"%tag)
+

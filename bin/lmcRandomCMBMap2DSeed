@@ -1,0 +1,98 @@
+#!/usr/bin/env python
+from flipper import *
+p = flipperDict.flipperDict()
+p.readFromFile(sys.argv[1])
+
+if len(sys.argv) > 2:
+    iterNum = eval(sys.argv[2])
+else:
+    iterNum = 0
+
+templates = p['templates']
+
+
+# create lensed and unlensed dirs
+try:
+    os.mkdir('unlensedCMBMaps_%03d'%iterNum)
+    os.mkdir('unlensedCMBMapsFromLensedPS_%03d'%iterNum)
+    os.mkdir('lensedCMBMaps_%03d'%iterNum)
+except:
+    pass
+
+count = 0
+for template in  templates:
+    print "Reading template %d"%count
+    m0 = liteMap.liteMapFromFits(template)
+    # read in the Phi Map 
+    phi  = liteMap.liteMapFromFits("phikappa_%03d/phiMapHiRes_%03d.fits"%(iterNum,count))
+    # generate Defection field
+
+    alpha = phi.takeGradient()
+
+    # read in the  2d seed 
+    X = pickle.load(open(p['twoDSeed']))
+    
+
+    
+    # find lensed  pixel position
+    iy,ix = numpy.mgrid[0:phi.Ny,0:phi.Nx]
+    iyf = iy.flatten()
+    ixf = ix.flatten()
+
+    a = numpy.array(alpha.gradX.data/ alpha.gradX.pixScaleX,dtype='int64')
+    b = numpy.array(alpha.gradY.data/ alpha.gradY.pixScaleY,dtype='int64')
+
+    iyLensed = iyf.copy()
+    ixLensed = ixf.copy()
+
+    iyLensed[:] = iyf[:] + b.flatten()
+    ixLensed[:] = ixf[:] + a.flatten()
+
+    id = numpy.where((ixLensed > ixf.max()) | (ixLensed < ixf.min()))
+    id2 = numpy.where((iyLensed > iyf.max()) | (iyLensed < iyf.min()))
+
+    ixLensed[id]  = ixf[id]
+    iyLensed[id2] = iyf[id2]
+
+
+
+
+    t0 = time.time()
+    # generate CMB map
+    cmbMap = phi.copy()
+    cmbMap.data[:] = 0.
+    cmbMap.fillWithGRFFromTemplate(X,bufferFactor=2)
+    cmbMap.data[:] -= cmbMap.data.mean()
+
+    # generate CMB map from Lensed Theory
+    cmbMap2 = cmbMap.copy()
+    
+
+    
+    lensedMap = cmbMap.copy()
+    lensedMap.data[iyf,ixf] = cmbMap.data[iyLensed,ixLensed]
+    
+    
+    # degrade to template resiolution
+    cmbMapLo = m0.copy()
+    cmbMapLo = liteMap.resampleFromHiResMap(cmbMap,m0)
+
+    cmbMap2Lo = m0.copy()
+    cmbMap2Lo = liteMap.resampleFromHiResMap(cmbMap2,m0)
+    
+
+    lensedMapLo = m0.copy()
+    lensedMapLo = liteMap.resampleFromHiResMap(lensedMap,m0)
+        
+    cmbMapLo.writeFits('unlensedCMBMaps_%03d/unlensedCMB_%03d.fits'%(iterNum,count), overWrite=True)
+    cmbMap2Lo.writeFits('unlensedCMBMapsFromLensedPS_%03d/unlensedCMB_%03d.fits'%(iterNum,count), overWrite=True)
+    lensedMapLo.writeFits('lensedCMBMaps_%03d/lensedCMB_%03d.fits'%(iterNum,count), overWrite=True)   
+    del cmbMap
+    del cmbMapLo
+    del cmbMap2Lo
+    del lensedMapLo
+    del cmbMap2
+    
+    t1 = time.time()
+    print "Map %d done in %f secs"%(count,t1-t0)
+    count += 1

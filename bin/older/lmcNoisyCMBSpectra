@@ -1,0 +1,64 @@
+#!/usr/bin/env python
+from flipper import *
+import scipy.ndimage
+p = flipperDict.flipperDict()
+p.readFromFile(sys.argv[1])
+
+
+#read in the theory
+X = numpy.loadtxt(p['theoryCls'])
+l = X[:,0]
+pi = numpy.pi
+cl =  X[:,1]/(l*(l+1))*2*pi
+
+Y = numpy.loadtxt(p['theoryCls'].replace('scal','lensed'))
+unlensedCls = []
+lensedCls = []
+for i in xrange(int(sys.argv[2]),int(sys.argv[3])+1):
+    for j in xrange(4):
+        if j == 0:
+            mapUL = liteMap.liteMapFromFits('unlensedMaps_CMBplusNoise_%03d/patch_148_000_0'%i)
+        else:
+            map = liteMap.liteMapFromFits('unlensedMaps_CMBplusNoise_%03d/patch_148_000_%d'%(i,j))
+            mapUL.data[:] += map.data[:]
+    mapUL.data[:] /= 4.0
+    if i == int(sys.argv[2]):
+        apod = mapUL.copy()
+        apod.data[:] = 0.
+        apod.data[10:apod.Ny-10,10:apod.Nx-10] = 1.0
+        apod.data = scipy.ndimage.gaussian_filter(apod.data,5,mode='constant')
+        #apod.data /= apod.data.mean()
+
+    mapUL.data *= apod.data
+    p2d = fftTools.powerFromLiteMap(mapUL)
+    p2d.createKspaceMask(verticalStripe=[-90,90])
+    lL,lU,lb,clb,clerrb,w  = p2d.binInAnnuli('BIN_50_SPT_v3',nearestIntegerBinning=True,cutByMask=True)
+    unlensedCls += [clb]
+
+    for j in xrange(4):
+        if j == 0:
+            mapL = liteMap.liteMapFromFits('lensedMaps_CMBplusNoise_%03d/patch_148_000_0'%i)
+        else:
+            map = liteMap.liteMapFromFits('lensedMaps_CMBplusNoise_%03d/patch_148_000_%d'%(i,j))
+            mapL.data[:] += map.data[:]
+    mapL.data[:] /= 4.0
+    mapL.data *= apod.data
+    p2d = fftTools.powerFromLiteMap(mapL)
+    p2d.createKspaceMask(verticalStripe=[-90,90])
+    lL,lU,lb,clb,clerrb,w  = p2d.binInAnnuli('BIN_50_SPT_v3',nearestIntegerBinning=True,cutByMask=True)
+    lensedCls += [clb]
+
+
+clUnlensed = numpy.mean(unlensedCls,axis=0)
+clLensed = numpy.mean(lensedCls,axis=0)
+#clUnlensedErr = numpy.std(unlensedCls,axis=0)
+fsky = apod.data.sum()/(apod.Ny*apod.Nx*1.0)
+print fsky
+pylab.semilogy(lb,fsky*lb**2/(2*pi)*clUnlensed,'o')
+pylab.semilogy(lb,fsky*lb**2/(2*pi)*clLensed,'o')
+pylab.plot(X[:,0], X[:,1])
+pylab.plot(Y[:,0], Y[:,1])
+pylab.xlim(10,10000)
+pylab.ylim(0.5,100000)
+utils.saveAndShow('clsNoisyCMB.png')
+

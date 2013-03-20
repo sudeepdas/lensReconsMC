@@ -1,0 +1,643 @@
+#!/usr/bin/env python
+#Given N-maps calculates cross-reconstruction between them
+
+from flipper import *
+from lensTcorrCombIR import *
+from numpy.fft import fftshift,fftfreq,fft2,ifft2
+from scipy import interpolate
+from scipy import *
+import os
+import random
+import sys
+import pickle
+
+TCMB = 2.726e6
+
+def getEmptyMapWithDifferentDims(m,Ny,Nx):
+   """
+   Creates an empty map on the same patch of the sky as m
+   but with different dimensions Ny ,Nx
+
+   """
+   data = numpy.zeros([Ny,Nx])
+   m = m.copy()
+   m.wcs.header.update('NAXIS1',Nx)
+   m.wcs.header.update('NAXIS2',Ny)
+   m.wcs.header.update('CDELT1',  m.wcs.header['CDELT1']*(m.Nx/(Nx*1.0)))
+   m.wcs.header.update('CDELT2',  m.wcs.header['CDELT2']*(m.Ny/(Ny*1.0)))
+   m.wcs.updateFromHeader()
+   p_x, p_y = m.skyToPix(m.x0,m.y0)
+   m.wcs.header.update('CRPIX1', m.wcs.header['CRPIX1'] - p_x)
+   m.wcs.header.update('CRPIX2', m.wcs.header['CRPIX2'] - p_y)
+   m.wcs.updateFromHeader()
+   mNew = liteMap.liteMapFromDataAndWCS(data, m.wcs)
+   return mNew
+
+def powerFromKMap(k1,k2,ft,ftret):
+    """
+    @brief Creates a power2D object from one power 2D object and two kmaps
+    """
+    p2d = ftret.copy()
+    mapFFT = k1.copy()
+    mapFFT2 = k2.copy()
+
+    area =ft.Nx*ft.Ny*ft.pixScaleX*ft.pixScaleY
+    p2d.powerMap = numpy.real(numpy.conjugate(mapFFT)*mapFFT2)*area/(ft.Nx*ft.Ny*1.0)**2
+    
+    return p2d
+
+def meanCrossSpec(mapList,applySlepianTaper=True,nresForSlepian=3.0):
+    count = 0 
+    
+    for i in xrange(len(mapList)):
+        for j in xrange(i):
+            
+            p2d = fftTools.powerFromLiteMap(mapList[i],mapList[j],\
+                                            applySlepianTaper=applySlepianTaper,\
+                                            nresForSlepian=nresForSlepian)
+            if count == 0:
+                p2d0 = p2d.copy()
+            else:
+                p2d0.powerMap[:] += p2d.powerMap[:]
+            count += 1
+            
+    p2d0.powerMap[:] /= count
+    powerM = p2d0.powerMap.copy()
+    print 'count=', count
+        
+    lL,lU,lBin,clBinCrossMean,err,w = p2d0.binInAnnuli(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/BIN_100_LOG')
+            
+    return lBin,clBinCrossMean,powerM
+
+def meanAutoSpec(mapList,applySlepianTaper=True,nresForSlepian=3.0):
+    count = 0 
+    
+    for i in xrange(len(mapList)):
+            
+        p2d = fftTools.powerFromLiteMap(mapList[i],\
+                                            applySlepianTaper=applySlepianTaper,\
+                                            nresForSlepian=nresForSlepian)
+        if count == 0:
+            p2d0 = p2d.copy()
+        else:
+            p2d0.powerMap[:] += p2d.powerMap[:]
+        count += 1
+            
+    p2d0.powerMap[:] /= count
+    powerM2 = p2d0.powerMap.copy()
+        
+        
+    lL,lU,lBin,clBinAutoMean,err,w = p2d0.binInAnnuli(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/BIN_100_LOG')
+            
+    return lBin,clBinAutoMean,powerM2
+
+def meanCrossPowerMap(mapList,applySlepianTaper=True,nresForSlepian=3.0):
+    count = 0 
+    
+    for i in xrange(len(mapList)):
+        for j in xrange(i):
+            
+            p2d = fftTools.powerFromLiteMap(mapList[i],mapList[j],\
+                                            applySlepianTaper=applySlepianTaper,\
+                                            nresForSlepian=nresForSlepian)
+            if count == 0:
+                p2d0 = p2d.copy()
+            else:
+                p2d0.powerMap[:] += p2d.powerMap[:]
+            count += 1
+            
+    p2d0.powerMap[:] /= count
+
+        
+    return p2d0
+
+
+def deconvolveMap(conmap,fwhmRad):
+
+    #deconvolving####################we are only using ls up to 20000 to prevent leakage
+    ell = numpy.arange(20000)
+    Filter = numpy.exp(ell**2.0*fwhmRad**2.0/(16.*numpy.log(2.)))
+    print "deconvolving.."
+    ft2 = fftTools.fftFromLiteMap(conmap)
+    kMap = ft2.kMap.copy()
+    kFilter0 = numpy.real(kMap.copy())*0.+ 1.
+    kFilter = kMap.copy()*0.
+    FlSpline = splrep(ell,Filter,k=3)
+    ll = numpy.ravel(ft2.modLMap)
+    kk = (splev(ll,FlSpline))
+    kFilter = numpy.reshape(kk,[conmap.Ny,conmap.Nx])
+    kFilter0 *= kFilter
+    kMap[:,:] *= kFilter0[:,:]
+    ft2.kMap = kMap
+    deconlensedMap2data = numpy.real(ifft2(kMap))
+    conmap.data[:] = deconlensedMap2data[:]
+    return conmap
+
+def deconvolveMapRealBeam(beamFile,ftthing):
+   
+   
+   ellist = []
+   filtlist = []
+   files = open(beamFile)
+   for line in files:
+      aa = line.split(' ')
+      bb = float(aa[0])
+      cc = 1./float(aa[1])
+      ellist.append(bb)
+      filtlist.append(cc)
+
+   kMap = ftthing.kMap.copy()
+   kFilter0 = numpy.real(kMap.copy())*0.+ 1.
+   kFilter = kMap.copy()*0.
+   FlSpline = splrep(ellist,filtlist,k=3)
+   ll = numpy.ravel(fttot.modLMap)
+   kk = (splev(ll,FlSpline))
+   kFilter = numpy.reshape(kk,[ftthing.Ny,ftthing.Nx])
+   kFilter0 *= kFilter
+   kMap[:,:] = kFilter0[:,:]
+   
+   return kMap
+
+def deconvolveMap(conmap,fwhmRad):
+
+    #deconvolving####################we are only using ls up to 20000 to prevent leakage
+    ell = numpy.arange(20000)
+    Filter = numpy.exp(ell**2.0*fwhmRad**2.0/(16.*numpy.log(2.)))
+    print "deconvolving.."
+    ft2 = fftTools.fftFromLiteMap(conmap)
+    kMap = ft2.kMap.copy()
+    kFilter0 = numpy.real(kMap.copy())*0.+ 1.
+    kFilter = kMap.copy()*0.
+    FlSpline = splrep(ell,Filter,k=3)
+    ll = numpy.ravel(ft2.modLMap)
+    kk = (splev(ll,FlSpline))
+    kFilter = numpy.reshape(kk,[conmap.Ny,conmap.Nx])
+    kFilter0 *= kFilter
+    kMap[:,:] *= kFilter0[:,:]
+    ft2.kMap = kMap
+    deconlensedMap2data = numpy.real(ifft2(kMap))
+    conmap.data[:] = deconlensedMap2data[:]
+    return conmap
+
+
+def createKMap(map0, map1, LF):
+    
+    LF.map1 = map0.copy()
+    LF.map2 = map1.copy()
+
+    lpMap  = LF.applyLowPass()
+    hpMap  = LF.applyHighPass()
+
+    ftkap, kappaMap, norma, nb = LF.makeKappaMap(trimAtL=trimNofLAtL)
+    
+    LF.map1 = map1.copy()
+    LF.map2 = map0.copy()
+    
+    lpMap  = LF.applyLowPass()
+    hpMap  = LF.applyHighPass()
+
+    ftkap, kappaMap2, norma, nb = LF.makeKappaMap(trimAtL=trimNofLAtL)
+    
+    #bla = ftkap.copy()
+    #bla.powerMap = numpy.fft.ifftshift(norma)
+    #lL,lU,lBin,clN,err,w = bla.binInAnnuli(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/BIN_100_LOG')
+
+    return ftkap, (kappaMap+kappaMap2)*LF.powerMap1.pixScaleX*LF.powerMap1.pixScaleY/2.#map1.pixScaleX*map1.pixScaleY/2.
+
+def createKMapOne(map0, LF):
+    
+    LF.map1 = map0.copy()
+    LF.map2 = map0.copy()
+
+    lpMap  = LF.applyLowPass()
+    hpMap  = LF.applyHighPass()
+
+    ftkap, kappaMap, norma, noiseBiasNew = LF.makeKappaMap(trimAtL=trimNofLAtL)
+    
+    #bla = ftkap.copy()
+    #bla.powerMap = numpy.fft.ifftshift(norma)
+    #lL,lU,lBin,clN,err,w = bla.binInAnnuli(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/BIN_100_LOG')
+
+    return ftkap, (kappaMap)*LF.powerMap1.pixScaleX*LF.powerMap1.pixScaleY, norma, noiseBiasNew
+
+def createDivMap(map0, map1, LF):
+    '''
+    @brief Given two maps creates the divergence of TGradT map. The high and low pass
+    filters are symmetrized between the maps.
+    @param map0  the first map
+    @param map1 the second map
+    @param LF lensFilter instanace 
+    '''
+
+    LF.map0 = map0.copy()
+    LF.map1 = map1.copy()
+
+    lpMap  = LF.applyLowPass()
+    hpMap  = LF.applyHighPass()
+
+    gradLP = lpMap.takeGradient()
+
+    hpGradLpX = lpMap.copy()
+    hpGradLpY = lpMap.copy()
+
+    hpGradLpX.data[:] = gradLP.gradX.data[:]*hpMap.data[:]
+    hpGradLpY.data[:] = gradLP.gradY.data[:]*hpMap.data[:]
+
+    divMap0 = liteMap.takeDivergence(hpGradLpX,hpGradLpY)
+
+    LF.map0 = map1.copy()
+    LF.map1 = map0.copy()
+
+    lpMap  = LF.applyLowPass()
+    hpMap  = LF.applyHighPass()
+
+    gradLP = lpMap.takeGradient()
+
+    hpGradLpX = lpMap.copy()
+    hpGradLpY = lpMap.copy()
+
+    hpGradLpX.data[:] = gradLP.gradX.data[:]*hpMap.data[:]
+    hpGradLpY.data[:] = gradLP.gradY.data[:]*hpMap.data[:]
+
+    divMap1 = liteMap.takeDivergence(hpGradLpX,hpGradLpY)
+
+    divMapMean = divMap1.copy()
+
+    divMapMean.data[:] = (divMap1.data[:]+ divMap0.data[:])/2.
+
+#BLAKE: get the divmap1 by flipping map0 and map1, and return mean
+
+    return divMapMean #should be divMapMean
+
+def extrapolateToPowerMap(crossPowerN,ell,Filter):
+
+     #ft2 = fftTools.fftFromLiteMap(conmap)
+    kMap = crossPowerN.powerMap.copy()#ft2.kMap.copy()
+    kFilter0 = numpy.real(kMap.copy())*0.+ 1.
+    kFilter = kMap.copy()*0.
+    FlSpline = splrep(ell,Filter,k=3)
+    ll = numpy.ravel(crossPowerN.modLMap)
+    kk = (splev(ll,FlSpline))
+    kFilter = numpy.reshape(kk,[crossPowerN.Ny,crossPowerN.Nx])
+    kFilter0 *= kFilter
+    kMap[:,:] *= kFilter0[:,:]*0.
+    kMap[:,:] += kFilter0[:,:]
+    copy = crossPowerN.copy()
+    copy.powerMap = kMap
+    return copy
+########################################################
+
+p = flipperDict.flipperDict()
+p.read_from_file(sys.argv[1])
+resultDir = p['resultDir']
+nMC = p['nMC']
+#os.system("cp /u/bsherwin/codes/lensreconsmc/bin/mcnew %s/mcnewback"%resultDir)
+#os.system("cp /u/bsherwin/codes/lensreconsmc/python/lensT.py %s/lensTBackup"%resultDir)
+numIterate = "%03d"%eval(sys.argv[2])
+patchNum = sys.argv[3]
+for q in xrange(eval(patchNum),eval(patchNum)+1):#nMC):
+    print 'q=', q
+    tMapFile = p['tMapFile']#'/scr/queequeg1/shared/projects/lensing/bcsCrossCorr/act148Shifted/patchesOnBCSFilteredShifted0/patch000_4'#+ str(q)#dir where maps are stored#A #list of mapNames
+    tMapFile2 = p['tMapFile220']
+    #kappaMapFile = p['kappaFile']#'/scr/queequeg1/shared/projects/lensing/mcSims/seasonNoise1.0/kappa.fits'
+    gMapFile = p['gMapFile']#'/scr/queequeg1/shared/projects/lensing/bcsCrossCorr/bcsMaps/kappaMap/patch000_0' #'/scr/queequeg1/shared/projects/#lensing/mcSims/seasonNoise17.0/patches_lensed2D/#patchx'
+    accuracyBoost = p['accuracyBoost']
+    apodize = p['apodize']
+    resultDir = p['resultDir']
+    noiseUkArcmin = p['noiseUkArcmin']
+    thetaFWHMarcmin = p['beamFWHM']
+    beamFile_148 = p['beamFile_148']
+    cosSqCutoffParams=p['filterCosSqCutoff']
+    trimNofLAtL = p['trimNofLAtL']
+    lMaxForPlots = p['lMaxForPlots']
+    plotDiagnostics = p['plotDiagnostics']
+    print p['mapNames']
+    mapDir= p['mapDir']+numIterate + '/' #'/u/bsherwin/codes/mcMapDir/'+ str(q)#dir where maps are stored
+    mapNames = [p['mapNames']+str(q)+'_0', p['mapNames']+str(q)+'_1', p['mapNames']+str(q)+'_2', p['mapNames']+str(q)+'_3']
+    TCMB = 2.726e6
+    try:
+        os.mkdir(resultDir)
+    except:
+        pass
+    
+
+    thetaFWHM = thetaFWHMarcmin*numpy.pi/(180.*60.)
+
+    #True kappa Map
+    #kappaTrue = liteMap.liteMapFromFits(kappaMapFile)
+    
+    
+    #true auto spectrum
+    #p2d = fftTools.powerFromLiteMap(kappaTrue,applySlepianTaper=True)
+    #lL,lU,lBin,clKappaTrueBin,err,w = p2d.binInAnnuli('BIN_100_LOG')
+
+    #read in the theory spectra: unlensed Cls and clKappaKappa
+    print "Reading in theory spectra"
+    X = pylab.load(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/wmap5scalCls.dat')
+    l = X[:,0]
+    lsqClOver2pi = X[:,1]
+    cl = lsqClOver2pi*(2*numpy.pi)/(l*(l+1.0))
+    cl /=TCMB**2 #unlensed cls
+    clkap = X[:,4]/(4.*TCMB**2) #clkapkap
+
+    X = pylab.load(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/wmap5lensedCls.dat')
+    lLensed = X[:,0]
+    lsqClOver2pi = X[:,1]
+    clLensed = lsqClOver2pi*(2*numpy.pi)/(lLensed*(lLensed+1.0))
+    clLensed /=TCMB**2 #lensed cls
+
+    #cl = cl/transferFl
+    #clLensed = clLensed/transferFlL
+    
+    if noiseUkArcmin == None:
+        deltaT = 0.0
+    else:
+        deltaT = noiseUkArcmin/thetaFWHMarcmin
+
+    #the theoretical noise spectrum
+    nl = (deltaT*thetaFWHM)**2*numpy.exp(l*(l+1)*thetaFWHM**2/(8.*numpy.log(2.)))/TCMB**2
+    
+    nMaps = len(mapNames)
+
+    map = liteMap.liteMapFromFits(mapDir+os.path.sep+mapNames[0])
+    mask = map.copy()
+    del map
+    if apodize:
+        print "Will apodize edges..."
+        mask.data[:] = 0.
+        mask.data[10:mask.Ny-10,10:mask.Nx-10] = 1.
+        mask = mask.convolveWithGaussian(fwhm=10.)
+        #taper = utils.slepianTaper00(mask.Nx, mask.Ny, 2.0)
+    else:
+        mask.data[:] = 1.0
+    value = mask.data.copy()
+    value[:] = 1.0
+    sumorig = value.sum()
+    sumnew = mask.data.sum()
+    fraction = sumnew/sumorig
+    print 'map apod fraction', fraction
+    taper = utils.slepianTaper00(mask.Nx,mask.Ny,3.0)
+    taper[:] = 1.
+    mask.data[:] /= numpy.sqrt(fraction)       
+      
+    exampleFile = mask.copy()
+    fttot = fftTools.fftFromLiteMap(exampleFile)
+    powertot = fftTools.powerFromLiteMap(exampleFile)
+    a148Beam = deconvolveMapRealBeam(beamFile_148,fttot)
+    #BLAKE read in other necessary parameters, theory etc
+
+    mapsAll148 = []
+    fftMapsAll148 = []
+    for k in xrange(nMaps):
+        print mapNames[k]
+        mapp = liteMap.liteMapFromFits(mapDir+os.path.sep+mapNames[k])
+        #mapp2 = deconvolveMap(mapp,thetaFWHM)
+        mapp.data[:] *= mask.data[:]/TCMB
+        fftMapp = fftTools.fftFromLiteMap(mapp)
+        fftMapp.kMap[:] *= a148Beam[:]
+        fftMapsAll148 += [fftMapp]
+        mapsAll148 += [mapp]
+
+
+    lBin, clCrossMean148, cross148 = meanCrossSpec(mapsAll148)
+    lBin, clAutoMean148, auto148 = meanAutoSpec(mapsAll148)
+
+    #nMaps = len(mapNames)
+
+    noiseP = auto148.copy()
+    noiseP[:] -= cross148[:]
+
+#generate and add Gaussian noise
+
+ 
+    #factor148 = fttot.kMap.copy()
+    #factor220 = fttot.kMap.copy()
+    #factor148[:,:] = 1./(clkMap[:,:] + noiseTh2D[:,:]*a148Beam[:,:]**2.)
+    #factor220[:,:] = 1./(clkMap[:,:] + a220noiseTh2D[:,:]*a220Beam[:,:]**2.)
+    #fttot.kMap[:,:] = ft148.kMap[:,:]*a148Beam[:,:]*factor148[:,:] + ft220.kMap[:,:]*a220Beam[:,:]*factor220[:,:]
+    #fttot.kMap[:,:] *= 1./(factor148[:,:]+factor220[:,:])
+    #fttot.kMap[:,:] *= a148Beam[:,:]
+    #powerOfComb = powerFromKMap(fttot.kMap,fttot.kMap,themapppower,themapppower)
+    
+    #noiseTotal = noiseTh2D.copy()
+    #noiseTotal[:,:] = noiseTh2D[:,:]*a148Beam[:,:]**2.*(factor148[:,:])**2. + a220noiseTh2D*a220Beam[:,:]**2.*(factor220[:,:])**2.
+    #noiseTotal[:,:] *= 1./(factor148[:,:]+factor220[:,:])**2.
+    #noiseTotal[:,:] = noiseTh2D[:,:]*a148Beam[:,:]**2.####TEMPORARY!!!
+
+    #pylab.clf()
+    #holder = p2d.copy()
+    #holder.powerMap = noiseTotal
+    #holder.plot(zoomUptoL=3000,log=True)
+    #pylab.savefig('2DnoiseDiff.png')
+    #pylab.clf()
+    print "now"
+    #powerOfComb.powerMap[:,:] *= tr[:,:]
+
+    
+    #get mean cross spectrum - compare with theory
+    #ft148.kMap[:,:]*a148Beam[:,:]
+    #initialize LF (for now pass in the theory for all spectra)
+    LF = lensFiltersElSpace(fttot.kMap\
+                            ,fttot.kMap\
+                            ,powertot\
+                            ,l\
+                            ,cl\
+                            ,noiseP\
+                            ,lBin\
+                            #,clBinCrossMean\
+                            #,clBinCrossMean\
+                            #,clBinCrossMean\
+                            #,thetaFWHM\
+                            #,cosSqCutoffParams)
+                            ,cross148\
+                            ,cross148\
+                            ,cross148\
+                            ,auto148\
+                            ,thetaFWHM\
+                            ,cosSqCutoffParams)#themappower replaces meanCrossPM
+                    
+ 
+
+    
+    divMapsAll = []
+    indicesList = []
+
+    for i in xrange(nMaps):
+        for j in xrange(i):
+            print i, j
+            
+            map0 = fftMapsAll148[i]
+            map1 = fftMapsAll148[j]
+            #parcel out maps
+            ftex, ftkappaMap = createKMap(map0.kMap,map1.kMap,LF)
+            divMapsAll += [ftkappaMap]
+            indicesList += [[i,j]]
+    
+    
+    pickle.dump(divMapsAll,open('divMapsAll'+numIterate+str(q),'w'))
+    pickle.dump(indicesList,open('indicesList'+numIterate+str(q),'w')) 
+    biases = []
+
+    nDivs = len(divMapsAll)
+    count = 0
+    LensF = []
+
+    for i in xrange(nDivs):
+        for j in xrange(i):
+            difference = 1
+            for k in xrange(2):
+                for lll in xrange(2):
+                    if (indicesList[i][k] == indicesList[j][lll]):
+                        difference = 0
+                 #   print indicesList[i][k],indicesList[j][l],difference
+       #     print i,j,indicesList[i],indicesList[j],difference
+            if difference:
+                print i,j,indicesList[i],indicesList[j], difference
+                crossPower = powerFromKMap(divMapsAll[i],divMapsAll[j],powertot,ftex)
+                lL,lU,lBin,clBin, plErr_12,weights = crossPower.binInAnnuli(os.environ['LENSRECONSMC_DIR']+\
+os.path.sep+'params/BIN_100_LOG')
+                
+                if count == 0:
+                    crossPower0 = crossPower.copy()
+                else:
+                    crossPower0.powerMap[:] += crossPower.powerMap[:]
+                    print 'adding power, n=', count
+            
+                count +=1
+    
+    crossPower0.powerMap[:] /= count
+    #LF.map1 = mapsplit1
+    #LF.map2 = mapsplit2
+    #bla = LF.applyHighPass()
+    #bla = LF.applyLowPass()
+   # LF.normalizeTwoD(trimAtL = trimNofLAtL)
+   # pickle.dump(LF.normalization[0:6000],open('normalizationaltorig.pkl','w'))
+   # pickle.dump(LF.noiseBias[0:6000],open('noiseBiasaltorig.pkl','w'))
+    #sys.exit()
+
+   
+    #galpower0 = powerFromKMap(galMapT,galMapT,p2d,ftex)
+    #lL,lU,lBin,divfactor, plErr_12,weights = galpower0.binInAnnuli('/u/bsherwin/flipper/params/BIN_100_LOG')  
+
+    #kMap = ftex.powerMap.copy()
+    #kFilter0 = numpy.real(kMap.copy())*0.+ 1.
+    #kFilter = kMap.copy()*0.
+    #FlSpline = splrep(lBin,divfactor,k=3)
+    #ll = numpy.ravel(ftex.modLMap)
+    #kk = (splev(ll,FlSpline))
+    #kFilter = numpy.reshape(kk,[ftex.Ny,ftex.Nx])
+    #kFilter0 *= kFilter
+    #kMap[:,:] = kFilter0[:,:]
+    
+
+    #normOutput = noiseBiasNew
+    #nB = powerFromKMap(normOutput,normOutput,p2d,ftex)#ftex.copy()
+    #nB.powerMap = noiseBiasNew
+    #nB.powerMap = normOutput
+    
+    #galMapT[:,:] /= kMap[:,:]#galpower0.powerMap[:,:]
+    #crossPower0 = powerFromKMap(ftkappaMap,galMapT,p2d,ftex)
+    #crossPowerNull = powerFromKMap(ftkappaMapNull,galMapT,p2d,ftex2)
+    #scatter = powerFromKMap(ftkappaMap,ftkappaMap,p2d,ftex)
+   # galpower = powerFromKMap(galMapT,galMapT,p2d,ftex)
+    #nullft = powerFromKMap(ftkappaMapNull,ftkappaMapNull,p2d,ftex2)
+    #error = scatter.copy()
+    #error.powerMap[:] = numpy.sqrt(numpy.abs(scatter.powerMap[:]*galpower.powerMap[:]))
+    
+    #pylab.clf()
+    #crossPower0.plot()
+    #pylab.savefig('nullPower.png')
+    #pylab.clf()
+
+    #scatter.powerMap[:] *= galpower.powerMap[:]
+    #scatter.powerMap[:] = numpy.sqrt(numpy.abs(scatter.powerMap[:]))
+    
+    #ftex, ftKappaMap1 = createKMap(mapsAll[0], mapsAll[1], LF)
+    #ftex, ftKappaMap2 = createKMap(mapsAll[2], mapsAll[3], LF)
+    #divMapsAll += [ftKappaMap1]
+    #divMapsAll += [ftKappaMap2]
+    #indicesList += [[0,1]]
+    #indicesList += [[2,3]]
+    #biases = []
+
+
+
+
+  #  crossPower0 = fftTools.powerFromLiteMap(divMapsAll[0],divMapsAll[0],applySlepianTaper=False)
+    #lL,lU,lBin,kgal, plErr_12,weights = crossPower0.binInAnnuli('BIN_100_LOG')
+    #lL,lU,lBin,knullgal, plErr_12,weights = crossPowerNull.binInAnnuli(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/BIN_100_LOG')
+    #lL,lU,lBin,kk, plErr_12,weights = scatter.binInAnnuli('/u/bsherwin/flipper/params/BIN_100_LOG')
+    #lL,lU,lBin,newNoiseBias, plErr_12,weights = bla.binInAnnuli('/u/bsherwin/flipper/params/BIN_100_LOG')
+    #lL,lU,lBin,newNorm, plErr_12,weights = bla2.binInAnnuli('/u/bsherwin/flipper/params/BIN_100_LOG')
+    #lL,lU,lBin,galgal, plErr_12,weights = galpower.binInAnnuli('/u/bsherwin/flipper/params/BIN_100_LOG')
+    #lL,lU,lBin,knullknull, plErr_12,weights = nullft.binInAnnuli(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/BIN_100_LOG')
+    #lL,lU,lBin,err, plErr_12,weights = error.binInAnnuli('/u/bsherwin/flipper/params/BIN_100_LOG')
+    #lL,lU,lBin,err, plErr_12,weights = error.binInAnnuli('/u/bsherwin/flipper/params/BIN_100_LOG')
+    #lL,lU,lBin,nBB, plErr_12,weights = nB.binInAnnuli('/u/bsherwin/flipper/params/BIN_100_LOG')
+
+    #err /= numpy.sqrt(weights/2.)
+
+    #print "product is:", product
+    #print "scatter is:", scatter
+    #sys.exit()
+    #pylab.clf()
+   
+    #pylab.loglog(lBin,clKappaTrueBin,label='true map auto')
+    #thefactorl = numpy.sqrt((2.*numpy.pi)/2./lBin/100./mapp.Nx/mapp.Ny/mapp.pixScaleX/mapp.pixScaleY)
+    #pickle.dump(kgal,open('kk2.pkl','w'))
+    #pickle.dump(clKappaTrueBin,open('clKappaTrue2.pkl','w'))
+    #pylab.loglog(lBin,kk,label='reconstructed kappa')
+    #pylab.loglog(lBin,kgal,'o',label='cross')
+    #pylab.loglog(lBin,kgal,'o',label='cross')
+    #pylab.loglog(lBin,numpy.abs(productnull)+sigma,label='null + Delta')
+    #pylab.loglog(lBin,numpy.abs(productnull)-sigma,label='null - Delta')
+    #pylab.loglog(lBin,clNoiseBias,label='noise bias')
+    #pylab.loglog(lBin,clKappaTrueBin,label='theory kappa')
+    #pylab.loglog(lBin,clKappaTrueBin+normalize,label='true + normalization')
+    #pylab.loglog(lBin,product-clNoiseBias,label='crosstmap - noise bias')
+    #pylab.loglog(lBin,clKappaTrueBin+noiseBias,label='true + noise bias -nonBin')
+    #pylab.loglog(lBin,product-noiseBias,label='crosstmap - noise bias-nonBin')
+ 
+    #pylab.xlabel(r'$\ell$')
+    #pylab.ylabel(r'$C_\ell$')
+    #pylab.xlim(10,lMaxForPlots)
+    #pylab.ylim(10.**(-10.),10.**(-4.))
+    #pylab.legend(loc='best')
+    #utils.saveAndShow()
+    #pylab.savefig(resultDir+os.path.sep+'powerSpectraKappa.png')
+    #pylab.clf()
+
+    #pickle.dump(lBin,open('lBin2.pkl','w'))
+    #pickle.dump(thefactorl,open('factor2.pkl','w'))
+
+    #pickle.dump(newNoiseBias,open('newNoiseBias.pkl','w'))
+    #pickle.dump(newNorm,open('newNorm.pkl','w'))
+    #pickle.dump(noiseBiasNew,open('origNB.pkl','w'))
+#pickle.dump(err,open('err.pkl','w'))
+
+    #pylab.plot(lBin,-knullgal,label='knullgal')
+   # pylab.plot(lBin,-kgal,label='kgal')
+    #pylab.plot(lBin,err,label='err')
+    #pylab.plot(lBin,-err,label='err')
+    #pylab.plot(lBin,-kgal,label='kgal')
+    #pylab.xlim(10,lMaxForPlots)
+    #pylab.legend(loc='best')
+    #utils.saveAndShow()
+   # pylab.savefig(resultDir+os.path.sep+'2ndpsk.png')
+    #pylab.clf()
+
+    #pylab.loglog(lBin,clKappaTrueBin,label='clkappa')
+    #pylab.loglog(lBin,Delta,label='DeltaCl')
+    #pylab.legend(loc='best')
+    #pylab.savefig(resultDir+os.path.sep+'signalnoise.png')
+    #pylab.clf()
+
+    #pylab.loglog(lLensed,clkap,label='clkap')
+    #pylab.loglog(lLensed,lLensed*lLensed*nl/840.,label='noise/840')
+    #pylab.legend(loc='best')
+    #pylab.savefig(resultDir+os.path.sep+'doweneed8pt.png')
+    #pylab.clf()
+
+   
+
+

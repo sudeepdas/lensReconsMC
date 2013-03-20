@@ -1,0 +1,63 @@
+#!/usr/bin/env python
+# This executable creates a random phi and corresponding kappa map
+# given a template map - the template map is left unharmed 
+
+from flipper import *
+
+p = flipperDict.flipperDict()
+p.readFromFile(sys.argv[1])
+if len(sys.argv) > 2:
+    iterNum = eval(sys.argv[2])
+else:
+    iterNum = 0
+
+#theoryCls = '/scr/queequeg1/simulations/cosmo_sim_maps/2009/inputs/lensedcmb/theoryCls/'
+X = numpy.loadtxt(p['theoryCls'])
+tcmb = 2.726e6
+lphi = X[:,0]
+clphi = X[:,4]/(lphi**4)/tcmb**2
+
+#Read in the template map
+
+templates = p['templates']
+
+nUp = p['upgradeFactor']
+outDirRoot = 'phikappa'
+
+
+outDir = "%s_%03d"%(outDirRoot,iterNum)
+
+try:
+    os.mkdir(outDir)
+except:
+    pass
+
+assert(nUp<5)
+count = 0 
+for template in templates:
+    print "reading template %03d"%count
+    m0 = liteMap.liteMapFromFits(template)
+
+    # create an empty map with finer pixles
+    m = liteMap.getEmptyMapWithDifferentDims(m0,m0.Ny*nUp,m0.Nx*nUp)
+    # fill it with a Gaussian Random realization of Phi
+    print "generating hi-res phi map"
+    m.fillWithGaussianRandomField(lphi,clphi,bufferFactor=2)
+    # take out the mean
+    m.data[:] -= m.data.mean()
+    m.writeFits('%s/phiMapHiRes_%03d.fits'%(outDir,count),overWrite=True)
+
+    
+    kappaMap = m.takeLaplacian()
+    kappaMap.data[:] /= 2.0
+
+    print "generating kappa map"
+    
+    kLo = m0.copy()
+    
+    kLo = liteMap.resampleFromHiResMap(kappaMap,m0)
+    kLo.writeFits('%s/kappa_%03d.fits'%(outDir,count),overWrite=True)
+    count += 1
+    print "done"
+    del m0, m, kLo, kappaMap
+    

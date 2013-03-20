@@ -1,0 +1,90 @@
+#!/usr/bin/env python 
+from flipper import *
+import pickle
+
+
+pathToMCdict = sys.argv[1]
+mcDir = '/'.join(pathToMCdict.split("/")[0:-1])  
+
+p = flipperDict.flipperDict()
+p.read_from_file(sys.argv[1])
+tag = p['tag']
+
+tag2 = "_"+(os.path.abspath(".").split("/"))[-1]
+
+tag2 = tag+ tag2
+
+ranPhaseDir = None
+if len(sys.argv) > 2:
+    ranPhaseDir = sys.argv[2]
+    tag2 += 'ranPhase'
+
+X = numpy.loadtxt('/project/rbond/sudeep/theoryFiles/bode_almost_wmap5_lmax_1e4_scalCls.dat')
+tcmb = 2.726e6
+clkk = X[:,4]/(4.*tcmb**2)
+l = X[:,0]
+lBinTh, clBinTh = fftTools.binTheoryPower(l,clkk,'BIN_LENS_2')
+
+print sys.argv
+lBin = pickle.load(open("lBinData.pkl"))
+clBin = pickle.load(open("meanClsData_"+tag+'.pkl'))
+#clBin /= 1.2
+clBinUn = pickle.load(open(mcDir+"/meanClsUn_"+tag+'.pkl'))
+if ranPhaseDir != None:
+    clBinRanPhase  = pickle.load(open(ranPhaseDir+"/meanClsData_"+tag+'.pkl'))
+clBinSigma = pickle.load(open(mcDir+"/newScatter_"+tag+'.pkl'))
+fac = 1.
+
+pylab.plot(lBin,clBin,"D",mec='blue',mfc='white')
+if ranPhaseDir != None:
+    pylab.errorbar(lBin,(clBin -clBinRanPhase),clBinSigma,fmt="ro")
+    pylab.plot(lBin,clBinRanPhase,"o",mfc="yellow",mec="green")
+    
+else:
+    pylab.errorbar(lBin,(clBin -clBinUn*fac),clBinSigma,fmt="o")
+    pylab.plot(lBin,clBinUn*fac)
+print clBin
+print clBinUn
+pylab.plot(l,clkk)
+g = pylab.gca()
+g.set_yscale("log")
+g.set_xscale("log")
+pylab.xlim(10,3300)
+pylab.ylim(1e-10,1e-4) 
+pylab.savefig("clsData_%s.png"%tag2)
+
+pylab.clf()
+pylab.plot(lBin,clBin,"D",mfc="white",mec="blue")
+
+if ranPhaseDir != None:
+    pylab.plot(lBin,clBinRanPhase,"o",mfc="yellow",mec="green")
+    pylab.errorbar(lBin,(clBin -clBinRanPhase),clBinSigma,fmt="ro")
+    clSignal =(clBin-clBinRanPhase)
+    id = numpy.where(lBin<3000)
+    print lBin, clSignal[id]/clBinTh[id]
+    #pylab.plot(lBinTh,clBinTh,"ko")
+    AL = numpy.sum(clSignal[id]*clBinTh[id]/(clBinSigma[id]**2))/numpy.sum(clBinTh[id]**2/clBinSigma[id]**2)
+    sigmaAL = numpy.sqrt(1./numpy.sum(clBinTh[id]**2/clBinSigma[id]**2))
+    
+    print AL, sigmaAL
+else:
+    pylab.plot(lBin,clBinUn,"o",mfc="#D4CECE",mec="#D4CECE")
+    pylab.errorbar(lBin,(clBin -clBinUn),clBinSigma,fmt="o",mfc='#D4CECE',mec="#D4CECE",ecolor='#D4CECE')
+
+print clBinUn
+print "sigma = ", clBinSigma
+pylab.plot(l,clkk,'c')
+g = pylab.gca()
+#g.set_yscale("log")
+g.set_xscale("log")
+pylab.xlim(10,3000)
+pylab.ylim(-0.5e-7,12e-7) 
+#pylab.ylim(1e-10,1e-4)
+ston = numpy.sqrt(numpy.sum((clBin-clBinUn)**2/clBinSigma**2))
+if ranPhaseDir != None:
+    ston = numpy.sqrt(numpy.sum((clBin-clBinRanPhase)**2/clBinSigma**2))
+    pylab.text(500,4e-7,"$A_L = %3.2f \pm %3.2f$"%(AL,sigmaAL))
+#pylab.text(1e3,4e-7,'S/N=%3.1f'%ston)
+print ston
+pylab.savefig("clsDataLinear_%s.png"%tag2)
+

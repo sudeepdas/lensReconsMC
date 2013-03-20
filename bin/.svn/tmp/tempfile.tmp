@@ -1,0 +1,185 @@
+#!/usr/bin/env python
+#Given N-maps calculates cross-reconstruction between them
+
+from flipper import *
+from numpy.fft import fftshift,fftfreq,fft2,ifft2
+from scipy import interpolate
+from scipy import *
+import scipy
+import os
+import random
+import sys
+import pickle
+from lmcTools import *
+import lmcTools
+
+#def smoothNoise(noisePowerObject,pixelSmoothingScale,deltaL,factor):
+ #   noiseCopy = noisePowerObject.copy()
+  #  outliersRemoved = removeOutliers(noiseCopy,deltaL,factor)
+
+
+#def removeOutliers(aPowerMap,deltaL,factor):
+    
+
+def meanCrossSpec(mapList,applySlepianTaper=True,nresForSlepian=3.0):
+    count = 0 
+    
+    for i in xrange(len(mapList)):
+        for j in xrange(i):
+            
+            p2d = fftTools.powerFromLiteMap(mapList[i],mapList[j],\
+                                            applySlepianTaper=applySlepianTaper,\
+                                            nresForSlepian=nresForSlepian)
+            if count == 0:
+                p2d0 = p2d.copy()
+            else:
+                p2d0.powerMap[:] += p2d.powerMap[:]
+            count += 1
+            
+    p2d0.powerMap[:] /= count
+    powerM = p2d0.powerMap.copy()
+    print 'count=', count
+        
+    lL,lU,lBin,clBinCrossMean,err,w = p2d0.binInAnnuli(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/BIN_100_LOG')
+            
+    return lBin,clBinCrossMean,powerM
+
+def meanAutoSpec(mapList,applySlepianTaper=True,nresForSlepian=3.0):
+    count = 0 
+    
+    for i in xrange(len(mapList)):
+            
+        p2d = fftTools.powerFromLiteMap(mapList[i],\
+                                         applySlepianTaper=applySlepianTaper,\
+                                            nresForSlepian=nresForSlepian)
+        if count == 0:
+            p2d0 = p2d.copy()
+        else:
+            p2d0.powerMap[:] += p2d.powerMap[:]
+        count += 1
+            
+    p2d0.powerMap[:] /= count
+    powerM2 = p2d0.powerMap.copy()
+        
+        
+    lL,lU,lBin,clBinAutoMean,err,w = p2d0.binInAnnuli(os.environ['LENSRECONSMC_DIR']+os.path.sep+'params/BIN_100_LOG')
+            
+    return lBin,clBinAutoMean,powerM2
+
+
+
+
+# Code starts here
+p = flipperDict.flipperDict()
+p.read_from_file(sys.argv[1])
+resultDir = p['resultDir']
+frequencies = p['frequencies']
+beamFile148 = p['beamFile148']
+beamFile220 = p['beamFile220']
+print beamFile148
+theoryFile = p['theoryFile']
+apodize = p['apodize']
+numIterate = sys.argv[2]
+q = sys.argv[3]
+for qalt in xrange(1):
+    print 'patchno', q
+
+    trimAtL = p['trimAtL']
+    mapDir= p['mapDir']+numIterate + '/' 
+    mapNames = [p['mapNames']+q+'_0', p['mapNames']+q+'_1', p['mapNames']+q+'_2', p['mapNames']+q+'_3']
+    TCMB = 2.726e6
+    try:
+        os.mkdir(resultDir)
+    except:
+        pass
+    
+    print "Reading in theory spectra"
+    X = pylab.load(theoryFile)
+    l = X[:,0]
+    lsqClOver2pi = X[:,1]
+    cl = lsqClOver2pi*(2*numpy.pi)/(l*(l+1.0))
+    cl /=TCMB**2 #unlensed cls
+    clkap = X[:,4]/(4.*TCMB**2) #clkapkap
+
+    map = liteMap.liteMapFromFits(mapDir+os.path.sep+mapNames[0])
+    mask = map.copy()
+    del map
+    if apodize:
+        print "Will apodize edges..."
+        mask.data[:] = 0.
+        mask.data[10:mask.Ny-10,10:mask.Nx-10] = 1.
+        mask = mask.convolveWithGaussian(fwhm=10.)
+        #taper = utils.slepianTaper00(mask.Nx, mask.Ny, 2.0)
+    else:
+        mask.data[:] = 1.0
+    value = mask.data.copy()
+    value[:] = 1.0
+    sumorig = value.sum()
+    sumnew = mask.data.sum()
+    fraction = sumnew/sumorig
+    print 'map apod fraction', fraction
+    mask.data[:] /= numpy.sqrt(fraction)       
+      
+    exampleFile = mask.copy()
+    fttot = fftTools.fftFromLiteMap(exampleFile)
+    powertot = fftTools.powerFromLiteMap(exampleFile)
+    
+
+    nMaps = len(mapNames)
+
+    mapsAll148 = []
+    
+    for k in xrange(nMaps):
+        print mapNames[k]
+        mapp = liteMap.liteMapFromFits(mapDir+os.path.sep+mapNames[k])
+        mapp.data[:] *= mask.data[:]/TCMB
+        #fftMapp = fftTools.fftFromLiteMap(mapp)
+        #fftMapp.kMap[:] *= a148Beam[:]
+        #fftMapsAll148 += [fftMapp]
+        mapsAll148 += [mapp]
+
+
+    lBin, clCrossMean148, cross148 = meanCrossSpec(mapsAll148,applySlepianTaper = 'False')
+    lBin, clAutoMean148, auto148 = meanAutoSpec(mapsAll148,applySlepianTaper='False')
+
+  
+    pylab.loglog(lBin,clCrossMean148)
+    pylab.loglog(lBin,clAutoMean148)
+    pylab.loglog(l,cl)
+    pylab.savefig('specVstheory.png')
+
+    noiseP = auto148.copy()
+    noiseP[:] -= cross148[:]
+    noiseP[:] /= 4.
+    
+    crossForNorm = lmcMisc.makeTemplate(lBin,clCrossMean148,fttot)
+# #TEMPORARY!!!
+
+    pylab.clf()
+    #holder = p2d.copy()
+    print "now"
+    #powerOfComb.powerMap[:,:] *= tr[:,:]
+    divMapsAll = []
+    indicesList = []
+
+<<<<<<< .mine
+    for i in xrange(nMaps):#(nMaps)
+=======
+    for i in xrange(nMaps):#xrange(nMaps):(nMaps)
+>>>>>>> .r142
+        for j in xrange(i):
+            print i, j
+            
+            map0 = mapsAll148[i]
+            map1 = mapsAll148[j]
+            sm0 = lmcTools.superMap(map0,noiseP,beamFile148,l,cl,trimAtL=trimAtL)
+            sm1 = lmcTools.superMap(map1,noiseP,beamFile148,l,cl,trimAtL=trimAtL)
+            #parcel out maps
+            ftkappaMap = getKappa(sm0,sm1,crossForNorm)
+            divMapsAll += [ftkappaMap]
+            indicesList += [[i,j]]
+    
+    pickle.dump(divMapsAll,open('saveKappas10'+numIterate+q,'w'))
+    pickle.dump(indicesList,open('indicesList'+numIterate+q,'w'))
+
+

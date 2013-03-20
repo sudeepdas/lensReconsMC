@@ -1,0 +1,31 @@
+#!/usr/bin/env python
+from flipper import *
+import speckMisc
+from generateRandomPoisson import fillWithPoissonRandomField
+
+p = flipperDict.flipperDict()
+p.readFromFile(sys.argv[1])
+
+nDivs = 4
+
+if len(sys.argv) > 2:
+    iterNum = eval(sys.argv[2])
+else:
+    iterNum = 0
+    
+templates = p['templates']
+    
+inputDir = p['inputDir']
+if inputDir == None:
+    inputDir = '.'
+
+freqs = p['frequencies']
+
+radDict = p['radioModel']
+irDict = p['irModel']
+
+mFreq = freqs[0]
+eFreq = freqs[-1]
+    
+for template in templates:
+    

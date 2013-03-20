@@ -1,0 +1,151 @@
+#!/usr/bin/env python
+#Given N-maps calculates cross-reconstruction between them
+
+from flipper import *
+#from lensTools  import *
+from numpy.fft import fftshift,fftfreq,fft2,ifft2
+from scipy import interpolate
+from scipy import *
+import os
+import random
+import pickle
+import numpy
+from fftTools import *
+
+def weightedBinInAnnuli(p2d,weightMap,binningFile,trimAtL,powerOfL):
+    binLo,binHi,binCent = fftTools.readBinningFile(binningFile)
+    id = numpy.where(binHi<trimAtL)
+    binHi = binHi[id]
+    binLo = binLo[id]
+    binCent = binCent[id]
+    binnedPower = binCent.copy()*0.
+    binCount = binCent.copy()*0.
+    weightedBincount = binCent.copy()
+    modIntLMap = numpy.array(p2d.modLMap + 0.5,dtype='int64')
+    for ibin in xrange(len(binHi)):
+        loc = numpy.where((modIntLMap >= binLo[ibin]) & (modIntLMap <= binHi[ibin]))
+        binMap = numpy.nan_to_num(p2d.powerMap.copy())*0.
+        #print numpy.sum(binMap)
+        binMap[loc] = weightMap[loc]
+        #print loc, weightMap[loc], numpy.sum(binMap),numpy.sum(weightMap[loc])
+        #sys.exit()
+        binnedPower[ibin] = numpy.sum(numpy.nan_to_num(p2d.powerMap)*binMap*p2d.modLMap**powerOfL)/numpy.sum(binMap)
+        binCount[ibin] = len(loc[0])
+        weightedBincount[ibin] = 1./(numpy.sum(weightMap[loc]**2)/(numpy.sum(weightMap[loc]))**2)
+        #print binCount[ibin]/weightedBincount
+    print binnedPower
+    return binLo,binHi,binCent,binnedPower, weightedBincount/2.
+
+def powerFromKMap(k1,k2,ft,ftret):
+    """
+    @brief Creates a power2D object from one power 2D object and two kmaps
+    """
+    p2d = ftret.copy()
+    mapFFT = k1.copy()
+    mapFFT2 = k2.copy()
+
+    area =ft.Nx*ft.Ny*ft.pixScaleX*ft.pixScaleY
+    p2d.powerMap = numpy.real(numpy.conjugate(mapFFT)*mapFFT2)
+    
+    return p2d
+
+
+
+
+pathToMCdict = sys.argv[1]
+mcDir = '/'.join(pathToMCdict.split("/")[0:-1])
+
+print mcDir
+
+repeat = 1
+if len(sys.argv) > 2:
+    repeat = eval(sys.argv[2])
+    
+    
+
+p = flipperDict.flipperDict()
+p.read_from_file(pathToMCdict)
+
+examplePatch = p['examplePatch']
+trimAtL = p['trimAtL']
+exampleLiteMap = liteMap.liteMapFromFits(examplePatch)
+p2d = fftTools.powerFromLiteMap(exampleLiteMap)
+ftex = p2d.trimAtL(trimAtL)
+
+numDivs = p['numDivs']
+mapList = p['mapList']
+tag = p['tag']
+indicesTag = p['indicesTag']
+binFile = p['binFile']
+weighting = p['weighting']
+
+print mapList
+print tag
+print 'computing null kappa maps'
+
+
+
+scatter = pickle.load(open(mcDir+'/scatterFile_'+tag+'.pkl'))
+weightMap = 1./scatter**2.
+weightMap[0,0] = weightMap[1,0]
+#loc = numpy.where(crossPower1Mean.modLMap ==0.)
+#print 'loc', loc, crossPower1Mean.modLMap[loc]
+#weightMap[loc] = 0.
+if weighting:
+    pass
+else:
+    print "Flat weights"
+    weightMap = weightMap*0. + 1.
+
+
+allDivsList = pickle.load(open(mcDir+'/allDivsList_'+tag+'.pkl'))
+
+
+for irep in xrange(repeat):
+    if irep == 0:
+        iternum = ''
+    else:
+        iternum = "%03d"%irep
+    counter = 0
+    for theMap in mapList:
+        newMap = pickle.load(open('saveKappas'+iternum+'_'+theMap+'_allall'))
+        newMap -= allDivsList[counter]
+        if counter == 0:
+            mapPower = powerFromKMap(newMap,newMap,p2d,ftex)
+            lL,lU,lbin,clbin,weights = weightedBinInAnnuli(mapPower,weightMap,binFile,trimAtL,0)
+        
+        else:
+            mapPowerTemp = powerFromKMap(newMap,newMap,p2d,ftex)
+            mapPower.powerMap[:] += mapPowerTemp.powerMap[:]
+            lL,lU,lbin,clbin,weights = weightedBinInAnnuli(mapPowerTemp,weightMap,binFile,trimAtL,0)
+        counter += 1
+        pylab.plot(lbin,clbin,label=theMap)
+        print clbin
+    print counter
+    mapPower.powerMap /= counter
+    if irep == 0:
+        totMapPower = mapPower.copy()
+    else:
+        totMapPower.powerMap += mapPower.powerMap
+        
+totMapPower.powerMap /= repeat
+
+lBinUn = pickle.load(open(mcDir+"/lBin.pkl"))
+print lBinUn
+clBinUn = pickle.load(open(mcDir+"/meanClsUn_"+tag+'.pkl'))
+pylab.plot(lBinUn,clBinUn,"o")
+pylab.legend()
+pylab.ylim(0,3e-6)
+pylab.savefig("clkks.png")
+pylab.clf()
+
+
+########### now weighted bin lensed and unlensed
+crossPowerMean = totMapPower.copy()
+crossPowerMean.powerMap[0,0] = crossPowerMean.powerMap[0,1]
+lL,lU,lBin,meanCls,weights = weightedBinInAnnuli(crossPowerMean,weightMap,binFile,trimAtL,0)
+
+pickle.dump(lBin,open('lBinData.pkl','w'))
+pickle.dump(meanCls,open('meanClsData_'+tag+'.pkl','w'))
+
+

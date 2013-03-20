@@ -1,0 +1,15 @@
+mapFile = '/scr2/users/sudeep/LensingSimulation/forLensRecons/lensedCMB/s02h00.fits'
+kappaMapFile = '/scr2/users/sudeep/LensingSimulation/forLensRecons/kappa/s02h00.fits'
+accuracyBoost = 1
+apodize = True
+doLspace = True
+resultDir = 'results'
+use2DVersion = True
+convolveMapWithBeam = True
+noiseUkArcmin = 1.0
+beamFWHM = 1.4
+filterCosSqCutoff = [3000,4000] #set it = None to turn this off
+trimNofLAtL = 4000  
+autoEstimator = False
+lMaxForPlots = 4000
+plotDiagnostics = True
